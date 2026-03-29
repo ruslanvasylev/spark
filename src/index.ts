@@ -1,5 +1,36 @@
+export * as THREE from "three";
+
 export { SparkRenderer, type SparkRendererOptions } from "./SparkRenderer";
 export { SparkViewpoint, type SparkViewpointOptions } from "./SparkViewpoint";
+export {
+  UegsDebugViewMode,
+  UegsPayloadAppearanceEncoding,
+  UegsPayloadColorSemantic,
+  UegsPayloadMaterialTruthSource,
+  getUegsSparkRenderContract,
+  applyUegsSparkViewContract,
+  attachUegsBundle,
+  configureUegsBundleForMesh,
+  getUegsSparkViewContract,
+  inspectUegsRuntimeTelemetry,
+  loadOptionalUegsBundleFromUrl,
+  parseUegsGaussianPayload,
+  parseUegsManifest,
+  parseUegsSceneLightingContract,
+  setUegsAmbientOcclusionEnabled,
+  setUegsBakedShadowEnabled,
+  setUegsDebugViewMode,
+  setUegsDirectLightingEnabled,
+  setUegsSkyLightingEnabled,
+  summarizeUegsBundle,
+  type UegsBundle,
+  type UegsGaussianPayload,
+  type UegsManifest,
+  type UegsRuntimeTelemetry,
+  type UegsSparkRenderContract,
+  type UegsSparkViewContract,
+  type UegsSceneLightingContract,
+} from "./uegs";
 
 export * as dyno from "./dyno";
 

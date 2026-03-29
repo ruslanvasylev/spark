@@ -11,6 +11,8 @@ attribute uint splatIndex;
 out vec4 vRgba;
 out vec2 vSplatUv;
 out vec3 vNdc;
+out vec3 vConic;
+out vec2 vScreenCenter;
 flat out uint vSplatIndex;
 
 uniform vec2 renderSize;
@@ -26,6 +28,7 @@ uniform bool debugFlag;
 uniform float minAlpha;
 uniform bool stochastic;
 uniform bool enable2DGS;
+uniform bool useUegsProjectedEllipse;
 uniform float blurAmount;
 uniform float preBlurAmount;
 uniform float focalDistance;
@@ -45,6 +48,8 @@ uniform vec4 rgbMinMaxLnScaleMinMax;
 void main() {
     // Default to outside the frustum so it's discarded if we return early
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+    vConic = vec3(-0.5, 0.0, -0.5);
+    vScreenCenter = vec2(0.0);
 
     if (uint(gl_InstanceID) >= numSplats) {
         return;
@@ -92,6 +97,7 @@ void main() {
 
     // Compute the clip space center of the splat
     vec4 clipCenter = projectionMatrix * vec4(viewCenter, 1.0);
+    vec3 ndcCenter = clipCenter.xyz / clipCenter.w;
 
     // Discard splats outside near/far planes
     if (abs(clipCenter.z) >= clipCenter.w) {
@@ -126,11 +132,115 @@ void main() {
         vec3 viewPos = viewCenter + quatVec(viewQuaternion, offset);
         gl_Position = projectionMatrix * vec4(viewPos, 1.0);
         vNdc = gl_Position.xyz / gl_Position.w;
+        #include <logdepthbuf_vertex>
         return;
     }
 
-    // Compute NDC center of the splat
-    vec3 ndcCenter = clipCenter.xyz / clipCenter.w;
+    if (useUegsProjectedEllipse) {
+        vec3 axisXView = quatVec(viewQuaternion, vec3(scales.x, 0.0, 0.0));
+        vec3 axisYView = quatVec(viewQuaternion, vec3(0.0, scales.y, 0.0));
+        vec3 axisZView = quatVec(viewQuaternion, vec3(0.0, 0.0, scales.z));
+
+        vec4 clipAxisX = projectionMatrix * vec4(viewCenter + axisXView, 1.0);
+        vec4 clipAxisY = projectionMatrix * vec4(viewCenter + axisYView, 1.0);
+        vec4 clipAxisZ = projectionMatrix * vec4(viewCenter + axisZView, 1.0);
+        if (clipAxisX.w <= 1.0e-6 || clipAxisY.w <= 1.0e-6 || clipAxisZ.w <= 1.0e-6) {
+            return;
+        }
+
+        vec2 centerScreen = vec2(
+            (ndcCenter.x * 0.5 + 0.5) * renderSize.x,
+            (0.5 - ndcCenter.y * 0.5) * renderSize.y
+        );
+        vec2 axisXScreen = vec2(
+            ((clipAxisX.x / clipAxisX.w) * 0.5 + 0.5) * renderSize.x,
+            (0.5 - (clipAxisX.y / clipAxisX.w) * 0.5) * renderSize.y
+        );
+        vec2 axisYScreen = vec2(
+            ((clipAxisY.x / clipAxisY.w) * 0.5 + 0.5) * renderSize.x,
+            (0.5 - (clipAxisY.y / clipAxisY.w) * 0.5) * renderSize.y
+        );
+        vec2 axisZScreen = vec2(
+            ((clipAxisZ.x / clipAxisZ.w) * 0.5 + 0.5) * renderSize.x,
+            (0.5 - (clipAxisZ.y / clipAxisZ.w) * 0.5) * renderSize.y
+        );
+
+        vec2 basisX = axisXScreen - centerScreen;
+        vec2 basisY = axisYScreen - centerScreen;
+        vec2 basisZ = axisZScreen - centerScreen;
+
+        float covXX =
+            basisX.x * basisX.x +
+            basisY.x * basisY.x +
+            basisZ.x * basisZ.x;
+        float covXY =
+            basisX.x * basisX.y +
+            basisY.x * basisY.y +
+            basisZ.x * basisZ.y;
+        float covYY =
+            basisX.y * basisX.y +
+            basisY.y * basisY.y +
+            basisZ.y * basisZ.y;
+
+        covXX += 0.3;
+        covYY += 0.3;
+        if (covXX <= 0.0 || covYY <= 0.0) {
+            return;
+        }
+
+        float mid = covXX + covYY;
+        float delta = length(vec2(covXX - covYY, 2.0 * covXY));
+        float lambda1 = 0.5 * (mid + delta);
+        float lambda2 = 0.5 * (mid - delta);
+        if (lambda1 <= 0.0 || lambda2 <= 0.0) {
+            return;
+        }
+
+        vec2 diagonalVector = vec2(covXY, lambda1 - covXX);
+        if (dot(diagonalVector, diagonalVector) <= 1.0e-8) {
+            diagonalVector = vec2(1.0, 0.0);
+        } else {
+            diagonalVector = normalize(diagonalVector);
+        }
+
+        float majorScale = min(maxPixelRadius, 3.0 * sqrt(lambda1));
+        float minorScale = min(maxPixelRadius, 3.0 * sqrt(lambda2));
+        if (majorScale < minPixelRadius && minorScale < minPixelRadius) {
+            return;
+        }
+
+        vec2 majorAxisPixels = majorScale * diagonalVector;
+        vec2 minorAxisPixels = minorScale * vec2(diagonalVector.y, -diagonalVector.x);
+
+        float determinant = covXX * covYY - covXY * covXY;
+        if (abs(determinant) <= 1.0e-8) {
+            return;
+        }
+
+        float inverseDeterminant = 1.0 / determinant;
+        float invXX = covYY * inverseDeterminant;
+        float invXY = -covXY * inverseDeterminant;
+        float invYY = covXX * inverseDeterminant;
+
+        vec2 majorAxisNdc = vec2(
+            majorAxisPixels.x * 2.0 / renderSize.x,
+            -majorAxisPixels.y * 2.0 / renderSize.y
+        );
+        vec2 minorAxisNdc = vec2(
+            minorAxisPixels.x * 2.0 / renderSize.x,
+            -minorAxisPixels.y * 2.0 / renderSize.y
+        );
+        vec2 quadNdc = ndcCenter.xy + position.x * majorAxisNdc + position.y * minorAxisNdc;
+
+        vRgba = rgba;
+        vSplatUv = position.xy * 3.0;
+        vNdc = vec3(quadNdc, ndcCenter.z);
+        vConic = vec3(-0.5 * invXX, -invXY, -0.5 * invYY);
+        vScreenCenter = centerScreen;
+        gl_Position = vec4(quadNdc * clipCenter.w, clipCenter.zw);
+        #include <logdepthbuf_vertex>
+        return;
+    }
 
     // Compute the 3D covariance matrix of the splat
     mat3 RS = scaleQuaternionToMatrix(scales, viewQuaternion);

@@ -254,19 +254,40 @@ export class PackedSplats {
 
     this.packedArray = null;
 
-    for (const key in this.extra) {
-      const dyno = this.extra[key] as DynoUniform<
-        DynoType,
-        string,
-        THREE.Texture
-      >;
-      if (dyno instanceof DynoUniform) {
-        const texture = dyno.value;
-        if (texture?.isTexture) {
-          texture.dispose();
-          texture.source.data = null;
+    const visited = new Set<unknown>();
+    const disposeExtraValue = (value: unknown) => {
+      if (!value || visited.has(value)) {
+        return;
+      }
+      visited.add(value);
+
+      if (value instanceof DynoUniform) {
+        disposeExtraValue(value.value);
+        return;
+      }
+
+      if ((value as THREE.Texture).isTexture) {
+        const texture = value as THREE.Texture;
+        texture.dispose();
+        texture.source.data = null;
+        return;
+      }
+
+      if (Array.isArray(value)) {
+        for (const entry of value) {
+          disposeExtraValue(entry);
+        }
+        return;
+      }
+
+      if (typeof value === "object") {
+        for (const nested of Object.values(value as Record<string, unknown>)) {
+          disposeExtraValue(nested);
         }
       }
+    };
+    for (const key in this.extra) {
+      disposeExtraValue(this.extra[key]);
     }
     this.extra = {};
   }

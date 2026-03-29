@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spark • UEGS Inspector</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #091018;
+      color: #d9e2f2;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    #overlay {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      width: min(440px, calc(100vw - 32px));
+      max-height: calc(100vh - 32px);
+      overflow: auto;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(8, 12, 18, 0.84);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
+      backdrop-filter: blur(6px);
+    }
+
+    #overlay h1 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+
+    #overlay p,
+    #overlay label,
+    #overlay code,
+    #overlay pre {
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    #overlay label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0;
+    }
+
+    #overlay pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 10px 0 0;
+      padding: 10px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    #status {
+      color: #9bb2d6;
+      margin-bottom: 8px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="overlay">
+    <h1>UEGS SPZ Inspector</h1>
+    <p id="status">Loading…</p>
+    <label><input id="auto-orbit" type="checkbox" checked /> Auto orbit camera</label>
+    <label><input id="sort-radial" type="checkbox" /> Use radial sort metric</label>
+    <label><input id="sort32" type="checkbox" /> Use 32-bit sort precision</label>
+    <label><input id="stochastic" type="checkbox" /> Use stochastic depth-write mode</label>
+    <label><input id="surface-2d" type="checkbox" /> Use 2D surface mode</label>
+    <label><input id="baked-shadow" type="checkbox" checked /> Enable baked shadow transfer</label>
+    <label><input id="direct-light" type="checkbox" checked /> Enable direct lights</label>
+    <label><input id="sky-light" type="checkbox" checked /> Enable sky lighting</label>
+    <label><input id="ambient-occlusion" type="checkbox" checked /> Enable ambient occlusion</label>
+    <label>
+      Debug view
+      <select id="debug-view">
+        <option value="0">Final</option>
+        <option value="1">Base Color</option>
+        <option value="18">Serialized Color</option>
+        <option value="2">Normal</option>
+        <option value="8">Raw Normal</option>
+        <option value="3">Direct Lighting</option>
+        <option value="4">Ambient Lighting</option>
+        <option value="9">Ambient Transfer</option>
+        <option value="10">Ambient Transfer + AO</option>
+        <option value="13">Ambient Contribution</option>
+        <option value="14">Ambient Contribution + AO</option>
+        <option value="5">Emissive</option>
+        <option value="11">Direct Transfer</option>
+        <option value="12">Direct Transfer + Shadow</option>
+        <option value="15">Direct Contribution</option>
+        <option value="16">Direct Contribution + Shadow</option>
+        <option value="17">Baked Composition</option>
+        <option value="6">Ambient Occlusion</option>
+        <option value="7">Baked Shadow</option>
+      </select>
+    </label>
+    <pre id="summary"></pre>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../../node_modules/three/build/three.module.js",
+        "@sparkjsdev/spark": "../../dist/spark.module.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import {
+      THREE,
+      SparkControls,
+      SparkRenderer,
+      SplatMesh,
+      attachUegsBundle,
+      configureUegsBundleForMesh,
+      getUegsSparkRenderContract,
+      getUegsSparkViewContract,
+      inspectUegsRuntimeTelemetry,
+      parseUegsGaussianPayload,
+      parseUegsManifest,
+      parseUegsSceneLightingContract,
+      setUegsAmbientOcclusionEnabled,
+      setUegsBakedShadowEnabled,
+      setUegsDebugViewMode,
+      setUegsDirectLightingEnabled,
+      setUegsSkyLightingEnabled,
+      summarizeUegsBundle,
+    } from "@sparkjsdev/spark";
+
+    const params = new URLSearchParams(window.location.search);
+    const parseOptionalNumber = (key) => {
+      const value = params.get(key);
+      if (value == null) {
+        return null;
+      }
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const normalizeColorQuery = (value) => {
+      if (!value) {
+        return null;
+      }
+      return value.startsWith("#") ? value : `#${value}`;
+    };
+    const parseBooleanQuery = (...keys) => {
+      for (const key of keys) {
+        const value = params.get(key);
+        if (value == null) {
+          continue;
+        }
+        return value !== "0" && value.toLowerCase() !== "false";
+      }
+      return null;
+    };
+    const geometryPreferenceRequested = (() => {
+      const value = (params.get("geometry") ?? "hybrid").toLowerCase();
+      return value === "payload" || value === "spz" ? value : "hybrid";
+    })();
+    const renderContractRequested =
+      (params.get("contract") ?? "uegs").toLowerCase() === "generic"
+        ? "generic"
+        : "uegs";
+    const splatURL = params.get("spz");
+    const autoOrbitRequested = params.get("auto") !== "0";
+    const bakedShadowRequested = params.get("bakedShadow") !== "0";
+    const directLightRequested = params.get("directLight") !== "0";
+    const skyLightRequested = params.get("skyLight") !== "0";
+    const ambientOcclusionRequested = params.get("ambientOcclusion") !== "0";
+    const overlayHiddenRequested =
+      params.get("overlay") === "0" ||
+      params.get("hideOverlay") === "1" ||
+      parseBooleanQuery("hideUi", "ui") === false;
+    const sortRadialRequested =
+      params.get("sortRadial") == null ? null : params.get("sortRadial") !== "0";
+    const sort32Requested =
+      params.get("sort32") == null ? null : params.get("sort32") !== "0";
+    const stochasticRequested =
+      params.get("stochastic") == null ? null : params.get("stochastic") !== "0";
+    const surface2dRequested =
+      params.get("surface2d") == null ? null : params.get("surface2d") !== "0";
+    const debugViewRequested = parseOptionalNumber("debugView") ?? 0;
+    const requestedMaxShDefault =
+      parseOptionalNumber("requestedMaxSh") ??
+      parseOptionalNumber("maxSh") ??
+      0;
+    const requestedMaxSh = parseOptionalNumber("maxSh") ?? requestedMaxShDefault;
+    const thetaRadians = parseOptionalNumber("theta") ?? 0.72;
+    const heightScale = parseOptionalNumber("heightScale") ?? 0.22;
+    const explicitCameraPosition = {
+      x: parseOptionalNumber("x"),
+      y: parseOptionalNumber("y"),
+      z: parseOptionalNumber("z"),
+    };
+    const explicitCameraQuaternion = {
+      x: parseOptionalNumber("qx"),
+      y: parseOptionalNumber("qy"),
+      z: parseOptionalNumber("qz"),
+      w: parseOptionalNumber("qw"),
+    };
+    const explicitCameraRequested =
+      explicitCameraPosition.x !== null ||
+      explicitCameraPosition.y !== null ||
+      explicitCameraPosition.z !== null ||
+      explicitCameraQuaternion.x !== null ||
+      explicitCameraQuaternion.y !== null ||
+      explicitCameraQuaternion.z !== null ||
+      explicitCameraQuaternion.w !== null;
+    const requestedFov = parseOptionalNumber("fov");
+    const requestedBackgroundColor = normalizeColorQuery(
+      params.get("bg") ?? params.get("background")
+    );
+    const manifestOverrideUrl = params.get("manifest");
+    const payloadOverrideUrl = params.get("payload");
+    const lightingOverrideUrl =
+      params.get("lighting") ?? params.get("sceneLighting");
+    const autoOrbitCheckbox = document.getElementById("auto-orbit");
+    const bakedShadowCheckbox = document.getElementById("baked-shadow");
+    const directLightCheckbox = document.getElementById("direct-light");
+    const skyLightCheckbox = document.getElementById("sky-light");
+    const ambientOcclusionCheckbox = document.getElementById("ambient-occlusion");
+    const debugViewSelect = document.getElementById("debug-view");
+    const overlayEl = document.getElementById("overlay");
+    const statusEl = document.getElementById("status");
+    const summaryEl = document.getElementById("summary");
+    const sortRadialCheckbox = document.getElementById("sort-radial");
+    const sort32Checkbox = document.getElementById("sort32");
+    const stochasticCheckbox = document.getElementById("stochastic");
+    const surface2dCheckbox = document.getElementById("surface-2d");
+
+    autoOrbitCheckbox.checked = explicitCameraRequested ? false : autoOrbitRequested;
+    directLightCheckbox.checked = directLightRequested;
+    skyLightCheckbox.checked = skyLightRequested;
+    ambientOcclusionCheckbox.checked = ambientOcclusionRequested;
+    debugViewSelect.value = String(debugViewRequested);
+    if (overlayHiddenRequested && overlayEl) {
+      overlayEl.style.display = "none";
+    }
+
+    let updateSummary = () => {};
+
+    const formatErrorMessage = (error) =>
+      error instanceof Error ? `${error.message}\n\n${error.stack ?? ""}` : String(error);
+
+    let startupState = "bootstrapping";
+    let startupSettled = false;
+    let startupDiagnostics = {
+      syncError: null,
+      contractError: null,
+      finalSyncError: null,
+      lastPhase: "bootstrapping",
+    };
+
+    const setStartupState = (nextState, message) => {
+      startupState = nextState;
+      startupDiagnostics.lastPhase = nextState;
+      statusEl.textContent = message;
+      updateSummary();
+    };
+
+    const fail = (error) => {
+      const message = formatErrorMessage(error);
+      startupSettled = false;
+      startupDiagnostics.contractError = startupDiagnostics.contractError ?? message;
+      setStartupState("failed", "UEGS inspector failed to initialize.");
+      summaryEl.textContent = message;
+      console.error(error);
+      throw error;
+    };
+
+    try {
+      if (!splatURL) {
+        statusEl.textContent =
+          "Missing ?spz=<url>. Pass a UEGS SPZ URL on the query string.";
+        bakedShadowCheckbox.disabled = true;
+        directLightCheckbox.disabled = true;
+        skyLightCheckbox.disabled = true;
+        ambientOcclusionCheckbox.disabled = true;
+        debugViewSelect.disabled = true;
+        stochasticCheckbox.disabled = true;
+        throw new Error("UEGS inspector requires ?spz=<url>");
+      }
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(requestedBackgroundColor ?? "#111827");
+
+      const camera = new THREE.PerspectiveCamera(
+        55,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        50000,
+      );
+      if (requestedFov !== null) {
+        camera.fov = requestedFov;
+        camera.updateProjectionMatrix();
+      }
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        preserveDrawingBuffer: true,
+      });
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      const spark = new SparkRenderer({ renderer });
+      scene.add(spark);
+      const controls = new SparkControls({ canvas: renderer.domElement });
+
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      const mesh = new SplatMesh({ url: splatURL });
+      scene.add(mesh);
+      await mesh.initialized;
+
+      const loadExplicitBundleOverride = async () => {
+        const overrideUrls = [
+          manifestOverrideUrl,
+          payloadOverrideUrl,
+          lightingOverrideUrl,
+        ];
+        const anyOverride = overrideUrls.some((value) => value != null);
+        if (!anyOverride) {
+          return null;
+        }
+        if (!manifestOverrideUrl || !payloadOverrideUrl || !lightingOverrideUrl) {
+          throw new Error(
+            "Explicit UEGS sidecar override requires ?manifest=<url>&payload=<url>&lighting=<url>",
+          );
+        }
+
+        const [manifestResponse, payloadResponse, lightingResponse] = await Promise.all([
+          fetch(manifestOverrideUrl),
+          fetch(payloadOverrideUrl),
+          fetch(lightingOverrideUrl),
+        ]);
+        if (!manifestResponse.ok) {
+          throw new Error(`Failed to load manifest override: ${manifestOverrideUrl}`);
+        }
+        if (!payloadResponse.ok) {
+          throw new Error(`Failed to load payload override: ${payloadOverrideUrl}`);
+        }
+        if (!lightingResponse.ok) {
+          throw new Error(`Failed to load lighting override: ${lightingOverrideUrl}`);
+        }
+
+        const [manifestText, payloadBytes, lightingText] = await Promise.all([
+          manifestResponse.text(),
+          payloadResponse.arrayBuffer(),
+          lightingResponse.text(),
+        ]);
+        return {
+          manifest: parseUegsManifest(manifestText),
+          payload: parseUegsGaussianPayload(payloadBytes),
+          sceneLighting: parseUegsSceneLightingContract(lightingText),
+        };
+      };
+
+      const explicitBundle = await loadExplicitBundleOverride();
+      if (explicitBundle) {
+        attachUegsBundle(mesh.packedSplats, explicitBundle);
+      }
+
+      const gl = renderer.getContext();
+
+      const extra = mesh.packedSplats.extra ?? {};
+      mesh.packedSplats.extra = extra;
+      const bundle = extra.uegsBundle;
+      if (!bundle) {
+        statusEl.textContent = "Loaded SPZ, but no UEGS bundle was attached.";
+        bakedShadowCheckbox.disabled = true;
+        directLightCheckbox.disabled = true;
+        skyLightCheckbox.disabled = true;
+        ambientOcclusionCheckbox.disabled = true;
+        debugViewSelect.disabled = true;
+        stochasticCheckbox.disabled = true;
+        throw new Error("UEGS bundle missing on loaded SPZ");
+      }
+
+      extra.uegsRenderGeometryPreference = geometryPreferenceRequested;
+      extra.uegsRequestedMaxSh = requestedMaxSh;
+      extra.uegsRenderContractOverride =
+        renderContractRequested === "generic"
+          ? {
+              opaqueShellCoverage: false,
+              clampMinimumShellScale: false,
+              cullBackfacingShellSplats: false,
+              flipNormalsToView: false,
+              usePayloadOpacity: false,
+              useSerializedBaseColorForBaseView: true,
+            }
+          : undefined;
+      extra.uegsGpuResources = undefined;
+      extra.uegsAutoConfigured = false;
+      mesh.uegsModifier = undefined;
+      configureUegsBundleForMesh(mesh);
+
+      const summary = summarizeUegsBundle(bundle);
+      const recommendedViewContract = getUegsSparkViewContract(mesh);
+      const recommendedRenderContract = getUegsSparkRenderContract(mesh);
+      if (renderContractRequested === "generic") {
+        spark.useUegsProjectedEllipse = false;
+        spark.opaqueShellCoverage = false;
+      }
+      const bounds = mesh.getBoundingBox(true);
+      const center = bounds.getCenter(new THREE.Vector3());
+      const size = bounds.getSize(new THREE.Vector3()).length();
+      const orbitRadius = Math.max(size * 0.9, 130);
+      const orbitHeight = Math.max(size * heightScale, 40);
+      const applyExplicitCameraPose = () => {
+        if (!explicitCameraRequested) {
+          return false;
+        }
+        camera.position.set(
+          explicitCameraPosition.x ?? camera.position.x,
+          explicitCameraPosition.y ?? camera.position.y,
+          explicitCameraPosition.z ?? camera.position.z,
+        );
+        if (
+          explicitCameraQuaternion.x !== null ||
+          explicitCameraQuaternion.y !== null ||
+          explicitCameraQuaternion.z !== null ||
+          explicitCameraQuaternion.w !== null
+        ) {
+          camera.quaternion.set(
+            explicitCameraQuaternion.x ?? camera.quaternion.x,
+            explicitCameraQuaternion.y ?? camera.quaternion.y,
+            explicitCameraQuaternion.z ?? camera.quaternion.z,
+            explicitCameraQuaternion.w ?? camera.quaternion.w,
+          ).normalize();
+        }
+        return true;
+      };
+      let bakedShadowEnabled =
+        summary.bakedGeometryShadowTransferExported && bakedShadowRequested;
+      let directLightingEnabled = directLightRequested;
+      let skyLightingEnabled = skyLightRequested;
+      let ambientOcclusionEnabled = ambientOcclusionRequested;
+      let debugViewMode = debugViewRequested;
+      let sortRadialEnabled =
+        sortRadialRequested ??
+        (renderContractRequested === "generic"
+          ? spark.viewpoint.sortRadial
+          : recommendedViewContract?.sortRadial) ??
+        spark.viewpoint.sortRadial;
+      let sort32Enabled =
+        sort32Requested ??
+        (renderContractRequested === "generic"
+          ? Boolean(spark.viewpoint.sort32)
+          : recommendedViewContract?.sort32) ??
+        Boolean(spark.viewpoint.sort32);
+      let stochasticEnabled =
+        stochasticRequested ??
+        (renderContractRequested === "generic"
+          ? spark.viewpoint.stochastic
+          : recommendedViewContract?.stochastic) ??
+        spark.viewpoint.stochastic;
+      let surface2dEnabled =
+        surface2dRequested ??
+        (renderContractRequested === "generic"
+          ? spark.enable2DGS
+          : recommendedRenderContract?.enable2DGS) ??
+        spark.enable2DGS;
+      bakedShadowCheckbox.checked = bakedShadowEnabled;
+      bakedShadowCheckbox.disabled = !summary.bakedGeometryShadowTransferExported;
+      sortRadialCheckbox.checked = sortRadialEnabled;
+      sort32Checkbox.checked = sort32Enabled;
+      stochasticCheckbox.checked = stochasticEnabled;
+      surface2dCheckbox.checked = surface2dEnabled;
+
+      const nextAnimationFrame = ({ timeoutMs = 100 } = {}) =>
+        new Promise((resolve) => {
+          let resolved = false;
+          const finish = () => {
+            if (resolved) {
+              return;
+            }
+            resolved = true;
+            resolve();
+          };
+          requestAnimationFrame(() => finish());
+          setTimeout(() => finish(), timeoutMs);
+        });
+
+      const getRenderTelemetry = () => ({
+        meshVersion: mesh.version,
+        sparkActiveSplatsVersion: spark.active?.splatsVersion ?? null,
+        sparkActiveMappingVersion: spark.active?.mappingVersion ?? null,
+        displaySplatsVersion: spark.viewpoint?.display?.accumulator?.splatsVersion ?? null,
+        displayMappingVersion: spark.viewpoint?.display?.accumulator?.mappingVersion ?? null,
+        pendingSplatsVersion: spark.viewpoint?.pending?.accumulator?.splatsVersion ?? null,
+        pendingDisplayed: spark.viewpoint?.pending?.displayed ?? null,
+        sortPending: spark.viewpoint?.pending != null,
+        sortActive: spark.viewpoint?.sorting != null,
+        viewpoint: {
+          sortRadial: spark.viewpoint?.sortRadial ?? null,
+          sort32: spark.viewpoint?.sort32 ?? null,
+          stochastic: spark.viewpoint?.stochastic ?? null,
+          sort360: spark.viewpoint?.sort360 ?? null,
+          depthBias: spark.viewpoint?.depthBias ?? null,
+        },
+        renderer: {
+          enable2DGS: spark.enable2DGS,
+          useUegsProjectedEllipse: spark.useUegsProjectedEllipse ?? null,
+          maxPixelRadius: spark.maxPixelRadius ?? null,
+        },
+      });
+
+      const getRendererContract = () => ({
+        isWebGL2: renderer.capabilities.isWebGL2,
+        maxTextures: renderer.capabilities.maxTextures,
+        maxVertexTextures: renderer.capabilities.maxVertexTextures,
+        maxTextureSize: renderer.capabilities.maxTextureSize,
+        maxCubemapSize: renderer.capabilities.maxCubemapSize,
+        maxTextureArrayLayers: renderer.capabilities.isWebGL2
+          ? gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS)
+          : null,
+        version: gl.getParameter(gl.VERSION),
+        shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+        renderer: gl.getParameter(gl.RENDERER),
+        vendor: gl.getParameter(gl.VENDOR),
+      });
+
+      const promoteActiveToDisplay = () => {
+        spark.viewpoint.autoPoll({ accumulator: spark.active });
+        spark.prepareViewpoint(spark.viewpoint);
+      };
+
+      const awaitRenderSync = async ({
+        minActiveSplatsVersion = null,
+        minMeshVersion = null,
+        stableFrames = 1,
+        timeoutMs = 8000,
+      } = {}) => {
+        const requiredStableFrames = Math.max(1, stableFrames);
+        const startedAt = performance.now();
+        let settledFrames = 0;
+        while (performance.now() - startedAt < timeoutMs) {
+          await nextAnimationFrame();
+          const beforePromote = getRenderTelemetry();
+          const activeVersion = beforePromote.sparkActiveSplatsVersion;
+          const meshVersion = beforePromote.meshVersion;
+          const meetsMinActive =
+            minActiveSplatsVersion == null ||
+            (activeVersion != null && activeVersion >= minActiveSplatsVersion);
+          const meetsMinMesh =
+            minMeshVersion == null ||
+            (meshVersion != null && meshVersion >= minMeshVersion);
+          if (!meetsMinActive || !meetsMinMesh) {
+            continue;
+          }
+
+          promoteActiveToDisplay();
+          await nextAnimationFrame();
+
+          const telemetry = getRenderTelemetry();
+          const displayVersion = telemetry.displaySplatsVersion;
+          const pendingVersion = telemetry.pendingSplatsVersion;
+          const displaySettled =
+            displayVersion != null &&
+            displayVersion === telemetry.sparkActiveSplatsVersion;
+          const pendingSettled =
+            pendingVersion == null ||
+            (displayVersion != null && pendingVersion <= displayVersion);
+          if (displaySettled && pendingSettled) {
+            settledFrames += 1;
+            if (settledFrames >= requiredStableFrames) {
+              return telemetry;
+            }
+            continue;
+          }
+          settledFrames = 0;
+        }
+        throw new Error(
+          `Timed out waiting for Spark display sync. telemetry=${JSON.stringify(getRenderTelemetry())}`,
+        );
+      };
+
+      const awaitSortIdle = async ({
+        stableFrames = 2,
+        timeoutMs = 60000,
+      } = {}) => {
+        const requiredStableFrames = Math.max(1, stableFrames);
+        const startedAt = performance.now();
+        let settledFrames = 0;
+        while (performance.now() - startedAt < timeoutMs) {
+          await nextAnimationFrame();
+          const telemetry = getRenderTelemetry();
+          if (!telemetry.sortPending && !telemetry.sortActive) {
+            settledFrames += 1;
+            if (settledFrames >= requiredStableFrames) {
+              return telemetry;
+            }
+            continue;
+          }
+          settledFrames = 0;
+        }
+        throw new Error(
+          `Timed out waiting for Spark sort idle. telemetry=${JSON.stringify(getRenderTelemetry())}`,
+        );
+      };
+
+      const awaitUniformSync = async ({ stableFrames = 2 } = {}) => {
+        const requiredStableFrames = Math.max(1, stableFrames);
+        for (let frame = 0; frame < requiredStableFrames; frame += 1) {
+          await nextAnimationFrame();
+        }
+        const telemetry = getRenderTelemetry();
+        updateSummary();
+        return telemetry;
+      };
+
+      const setBakedShadowRuntimeEnabled = (enabled, { force = false } = {}) => {
+        const requestedEnabled =
+          summary.bakedGeometryShadowTransferExported && enabled;
+        if (!force && bakedShadowEnabled === requestedEnabled) {
+          bakedShadowCheckbox.checked = requestedEnabled;
+          return false;
+        }
+        bakedShadowEnabled = requestedEnabled;
+        bakedShadowCheckbox.checked = requestedEnabled;
+        return setUegsBakedShadowEnabled(mesh, requestedEnabled);
+      };
+
+      const setDirectLightingRuntimeEnabled = (enabled, { force = false } = {}) => {
+        if (!force && directLightingEnabled === enabled) {
+          directLightCheckbox.checked = enabled;
+          return false;
+        }
+        directLightingEnabled = enabled;
+        directLightCheckbox.checked = enabled;
+        return setUegsDirectLightingEnabled(mesh, enabled);
+      };
+
+      const setSkyLightingRuntimeEnabled = (enabled, { force = false } = {}) => {
+        if (!force && skyLightingEnabled === enabled) {
+          skyLightCheckbox.checked = enabled;
+          return false;
+        }
+        skyLightingEnabled = enabled;
+        skyLightCheckbox.checked = enabled;
+        return setUegsSkyLightingEnabled(mesh, enabled);
+      };
+
+      const setAmbientOcclusionRuntimeEnabled = (enabled, { force = false } = {}) => {
+        if (!force && ambientOcclusionEnabled === enabled) {
+          ambientOcclusionCheckbox.checked = enabled;
+          return false;
+        }
+        ambientOcclusionEnabled = enabled;
+        ambientOcclusionCheckbox.checked = enabled;
+        return setUegsAmbientOcclusionEnabled(mesh, enabled);
+      };
+
+      const setDebugViewRuntimeMode = (mode, { force = false } = {}) => {
+        const nextMode = Number(mode) || 0;
+        debugViewSelect.value = String(nextMode);
+        if (!force && debugViewMode === nextMode) {
+          return false;
+        }
+        debugViewMode = nextMode;
+        debugViewSelect.value = String(debugViewMode);
+        return setUegsDebugViewMode(mesh, debugViewMode);
+      };
+
+      const applyRuntimeConfiguration = async (
+        {
+          bakedShadow = bakedShadowEnabled,
+          directLighting = directLightingEnabled,
+          skyLighting = skyLightingEnabled,
+          ambientOcclusion = ambientOcclusionEnabled,
+          debugViewMode: nextDebugViewMode = debugViewMode,
+        } = {},
+        { force = false, rebuild = true } = {},
+      ) => {
+        const nextMode = Number(nextDebugViewMode) || 0;
+        const debugViewChanged = force || debugViewMode !== nextMode;
+        const requestedMaxShForMode =
+          nextMode === 1 ? 0 : requestedMaxShDefault;
+        if (requestedMaxSh !== requestedMaxShForMode) {
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set("debugView", String(nextMode));
+          nextUrl.searchParams.set("maxSh", String(requestedMaxShForMode));
+          nextUrl.searchParams.set(
+            "requestedMaxSh",
+            String(requestedMaxShDefault),
+          );
+          nextUrl.searchParams.set("bakedShadow", bakedShadow ? "1" : "0");
+          nextUrl.searchParams.set(
+            "directLight",
+            directLighting ? "1" : "0",
+          );
+          nextUrl.searchParams.set("skyLight", skyLighting ? "1" : "0");
+          nextUrl.searchParams.set(
+            "ambientOcclusion",
+            ambientOcclusion ? "1" : "0",
+          );
+          window.location.href = nextUrl.toString();
+          return { reloading: true, href: nextUrl.toString() };
+        }
+        let changed = false;
+        if (extra.uegsRequestedMaxSh !== requestedMaxShForMode) {
+          extra.uegsRequestedMaxSh = requestedMaxShForMode;
+          changed = true;
+        }
+        if ((mesh.maxSh ?? 0) !== requestedMaxShForMode) {
+          mesh.maxSh = requestedMaxShForMode;
+          changed = true;
+        }
+        changed =
+          setBakedShadowRuntimeEnabled(bakedShadow, { force }) || changed;
+        changed =
+          setDirectLightingRuntimeEnabled(directLighting, { force }) || changed;
+        changed =
+          setSkyLightingRuntimeEnabled(skyLighting, { force }) || changed;
+        changed =
+          setAmbientOcclusionRuntimeEnabled(ambientOcclusion, { force }) ||
+          changed;
+        changed =
+          setDebugViewRuntimeMode(nextMode, { force }) || changed;
+        if (!changed) {
+          updateSummary();
+          return getRenderTelemetry();
+        }
+        if (!rebuild && !debugViewChanged) {
+          return await awaitUniformSync();
+        }
+        return await forceRuntimeRebuild();
+      };
+
+      const applyBakedShadowEnabled = async (enabled, options = {}) =>
+        applyRuntimeConfiguration({ bakedShadow: enabled }, options);
+
+      const applyDirectLightingEnabled = async (enabled, options = {}) =>
+        applyRuntimeConfiguration({ directLighting: enabled }, options);
+
+      const applySkyLightingEnabled = async (enabled, options = {}) =>
+        applyRuntimeConfiguration({ skyLighting: enabled }, options);
+
+      const applyAmbientOcclusionEnabled = async (enabled, options = {}) =>
+        applyRuntimeConfiguration({ ambientOcclusion: enabled }, options);
+
+      const applyDebugViewMode = async (mode, options = {}) =>
+        applyRuntimeConfiguration({ debugViewMode: mode }, options);
+
+      const applySortConfiguration = async ({
+        sortRadial,
+        sort32,
+        stochastic,
+        force = false,
+      }) => {
+        if (
+          !force &&
+          sortRadialEnabled === sortRadial &&
+          sort32Enabled === sort32 &&
+          stochasticEnabled === stochastic
+        ) {
+          updateSummary();
+          return getRenderTelemetry();
+        }
+        sortRadialEnabled = sortRadial;
+        sort32Enabled = sort32;
+        stochasticEnabled = stochastic;
+        sortRadialCheckbox.checked = sortRadialEnabled;
+        sort32Checkbox.checked = sort32Enabled;
+        stochasticCheckbox.checked = stochasticEnabled;
+        spark.viewpoint.sortRadial = sortRadialEnabled;
+        spark.viewpoint.sort32 = sort32Enabled;
+        spark.viewpoint.stochastic = stochasticEnabled;
+        spark.viewpoint.autoPoll({ accumulator: spark.active });
+        await awaitSortIdle();
+        updateSummary();
+        return getRenderTelemetry();
+      };
+
+      const applySurface2dEnabled = async (enabled, { force = false } = {}) => {
+        if (!force && surface2dEnabled === enabled) {
+          updateSummary();
+          return getRenderTelemetry();
+        }
+        surface2dEnabled = enabled;
+        surface2dCheckbox.checked = surface2dEnabled;
+        spark.enable2DGS = surface2dEnabled;
+        await nextAnimationFrame();
+        updateSummary();
+        return getRenderTelemetry();
+      };
+
+      const getRuntimeState = () => ({
+        sparkRuntime: inspectUegsRuntimeTelemetry(mesh),
+        startupState,
+        startupSettled,
+        startupDiagnostics,
+        bundleContract: {
+          appearanceEncoding: bundle.payload.header.appearanceEncoding,
+          payloadVersion: bundle.payload.header.version,
+          recordCount: bundle.payload.header.recordCount,
+          directionalLightCount: summary.directionalLightCount,
+          localLightCount: summary.localLightCount,
+          skyLightCount: summary.skyLightCount,
+          bakedGeometryShadowTransferExported:
+            summary.bakedGeometryShadowTransferExported,
+          bakedShadowRuntimeEnabled: bakedShadowEnabled,
+          directLightingRuntimeEnabled: directLightingEnabled,
+          skyLightingRuntimeEnabled: skyLightingEnabled,
+          ambientOcclusionRuntimeEnabled: ambientOcclusionEnabled,
+          debugViewMode,
+          geometryPreference: geometryPreferenceRequested,
+          renderContractPreference: renderContractRequested,
+          toneMappingApplied: summary.toneMappingApplied,
+          lensEffectsApplied: summary.lensEffectsApplied,
+          geometryContactShadowApproximationExpected:
+            summary.geometryContactShadowApproximationExpected,
+        },
+        viewpointContract: {
+          recommended: recommendedViewContract,
+          runtime: {
+            sortRadial: sortRadialEnabled,
+            sort32: sort32Enabled,
+            stochastic: stochasticEnabled,
+            sort360: spark.viewpoint.sort360 ?? false,
+            depthBias: spark.viewpoint.depthBias ?? null,
+          },
+          matchesRecommended: recommendedViewContract
+            ? sortRadialEnabled === recommendedViewContract.sortRadial &&
+              sort32Enabled === recommendedViewContract.sort32 &&
+              stochasticEnabled === recommendedViewContract.stochastic &&
+              (spark.viewpoint.sort360 ?? false) ===
+                recommendedViewContract.sort360
+            : null,
+        },
+        renderContract: {
+          recommended: recommendedRenderContract,
+          runtime: {
+            enable2DGS: surface2dEnabled,
+            useUegsProjectedEllipse: spark.useUegsProjectedEllipse ?? null,
+            opaqueShellCoverage: spark.opaqueShellCoverage ?? null,
+            maxPixelRadius: spark.maxPixelRadius ?? null,
+          },
+          matchesRecommended: recommendedRenderContract
+            ? surface2dEnabled === recommendedRenderContract.enable2DGS &&
+              (spark.useUegsProjectedEllipse ?? null) ===
+                recommendedRenderContract.useUegsProjectedEllipse &&
+              (spark.opaqueShellCoverage ?? null) ===
+                recommendedRenderContract.opaqueShellCoverage &&
+              (spark.maxPixelRadius ?? null) ===
+                recommendedRenderContract.maxPixelRadius
+            : null,
+        },
+        rendererContract: getRendererContract(),
+        payloadTelemetry: {
+          normalLength: summary.payloadTelemetry.normalLength,
+          roughness: summary.payloadTelemetry.roughness,
+          metallic: summary.payloadTelemetry.metallic,
+          ambientOcclusion: summary.payloadTelemetry.ambientOcclusion,
+          bakedShadow: summary.payloadTelemetry.bakedShadow,
+          opacity: summary.payloadTelemetry.opacity,
+        },
+        renderTelemetry: getRenderTelemetry(),
+      });
+
+      const forceRuntimeRebuild = async () => {
+        const previousMeshVersion = mesh.version ?? -1;
+        mesh.updateVersion();
+        await awaitRenderSync({
+          minMeshVersion: previousMeshVersion + 1,
+        });
+        updateSummary();
+        return getRenderTelemetry();
+      };
+
+      updateSummary = () => {
+        summaryEl.textContent = JSON.stringify(
+          {
+            spz: splatURL,
+            ...getRuntimeState(),
+          },
+          null,
+          2,
+        );
+      };
+
+      bakedShadowCheckbox.addEventListener("change", () => {
+        void applyBakedShadowEnabled(bakedShadowCheckbox.checked).catch(fail);
+      });
+      sortRadialCheckbox.addEventListener("change", () => {
+        void applySortConfiguration({
+          sortRadial: sortRadialCheckbox.checked,
+          sort32: sort32Enabled,
+          stochastic: stochasticEnabled,
+        }).catch(fail);
+      });
+      sort32Checkbox.addEventListener("change", () => {
+        void applySortConfiguration({
+          sortRadial: sortRadialEnabled,
+          sort32: sort32Checkbox.checked,
+          stochastic: stochasticEnabled,
+        }).catch(fail);
+      });
+      stochasticCheckbox.addEventListener("change", () => {
+        void applySortConfiguration({
+          sortRadial: sortRadialEnabled,
+          sort32: sort32Enabled,
+          stochastic: stochasticCheckbox.checked,
+        }).catch(fail);
+      });
+      surface2dCheckbox.addEventListener("change", () => {
+        void applySurface2dEnabled(surface2dCheckbox.checked).catch(fail);
+      });
+      directLightCheckbox.addEventListener("change", () => {
+        void applyDirectLightingEnabled(directLightCheckbox.checked).catch(fail);
+      });
+      skyLightCheckbox.addEventListener("change", () => {
+        void applySkyLightingEnabled(skyLightCheckbox.checked).catch(fail);
+      });
+      ambientOcclusionCheckbox.addEventListener("change", () => {
+        void applyAmbientOcclusionEnabled(ambientOcclusionCheckbox.checked).catch(fail);
+      });
+      debugViewSelect.addEventListener("change", () => {
+        void applyDebugViewMode(debugViewSelect.value).catch(fail);
+      });
+
+      const placeStaticCamera = () => {
+        if (applyExplicitCameraPose()) {
+          return;
+        }
+        camera.position.set(
+          center.x + Math.cos(thetaRadians) * orbitRadius,
+          center.y + orbitHeight,
+          center.z + Math.sin(thetaRadians) * orbitRadius,
+        );
+        camera.lookAt(center);
+      };
+
+      placeStaticCamera();
+
+      const renderCurrentFrame = (time = performance.now()) => {
+        const t = time * 0.00035;
+        if (autoOrbitCheckbox.checked) {
+          camera.position.set(
+            center.x + Math.cos(t) * orbitRadius,
+            center.y + orbitHeight,
+            center.z + Math.sin(t) * orbitRadius,
+          );
+          camera.lookAt(center);
+        } else {
+          controls.update(camera);
+        }
+        renderer.render(scene, camera);
+      };
+
+      const readRenderedPixels = () => {
+        const width = renderer.domElement.width;
+        const height = renderer.domElement.height;
+        const target = new THREE.WebGLRenderTarget(width, height, {
+          format: THREE.RGBAFormat,
+          type: THREE.UnsignedByteType,
+        });
+        const pixels = new Uint8Array(width * height * 4);
+        const previousTarget = renderer.getRenderTarget();
+        renderer.setRenderTarget(target);
+        renderCurrentFrame();
+        renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+        renderer.setRenderTarget(previousTarget);
+        target.dispose();
+        return { width, height, pixels };
+      };
+
+      const capturePixelDigest = () => {
+        const { width, height, pixels } = readRenderedPixels();
+        let hash = 2166136261 >>> 0;
+        let lumaSum = 0;
+        let nonZeroAlpha = 0;
+        let minLuma = Number.POSITIVE_INFINITY;
+        let maxLuma = Number.NEGATIVE_INFINITY;
+        let alphaSum = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          const r = pixels[i];
+          const g = pixels[i + 1];
+          const b = pixels[i + 2];
+          const a = pixels[i + 3];
+          hash ^= r;
+          hash = Math.imul(hash, 16777619) >>> 0;
+          hash ^= g;
+          hash = Math.imul(hash, 16777619) >>> 0;
+          hash ^= b;
+          hash = Math.imul(hash, 16777619) >>> 0;
+          hash ^= a;
+          hash = Math.imul(hash, 16777619) >>> 0;
+          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          lumaSum += luma;
+          minLuma = Math.min(minLuma, luma);
+          maxLuma = Math.max(maxLuma, luma);
+          alphaSum += a;
+          if (a > 0) {
+            nonZeroAlpha += 1;
+          }
+        }
+
+        const pixelCount = width * height;
+        return {
+          width,
+          height,
+          pixelCount,
+          hash32: hash >>> 0,
+          meanLuma: pixelCount > 0 ? lumaSum / pixelCount : 0,
+          minLuma: Number.isFinite(minLuma) ? minLuma : 0,
+          maxLuma: Number.isFinite(maxLuma) ? maxLuma : 0,
+          meanAlpha: pixelCount > 0 ? alphaSum / pixelCount : 0,
+          nonZeroAlphaFraction: pixelCount > 0 ? nonZeroAlpha / pixelCount : 0,
+        };
+      };
+
+      const capturePixelPng = () => {
+        const { width, height, pixels } = readRenderedPixels();
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        if (!context) {
+          throw new Error("2D canvas context unavailable for capturePixelPng");
+        }
+        const imageData = context.createImageData(width, height);
+        for (let row = 0; row < height; row += 1) {
+          const sourceOffset = row * width * 4;
+          const targetOffset = (height - row - 1) * width * 4;
+          imageData.data.set(
+            pixels.subarray(sourceOffset, sourceOffset + width * 4),
+            targetOffset,
+          );
+        }
+        context.putImageData(imageData, 0, 0);
+        return canvas.toDataURL("image/png");
+      };
+
+      const captureCanvasPng = () => {
+        renderCurrentFrame();
+        return renderer.domElement.toDataURL("image/png");
+      };
+
+      const captureCanvasDigest = () => {
+        renderCurrentFrame();
+        const sourceWidth = renderer.domElement.width;
+        const sourceHeight = renderer.domElement.height;
+        const maxDimension = 256;
+        const scale = Math.min(
+          1,
+          maxDimension / Math.max(sourceWidth, sourceHeight, 1),
+        );
+        const sampleWidth = Math.max(1, Math.round(sourceWidth * scale));
+        const sampleHeight = Math.max(1, Math.round(sourceHeight * scale));
+        const sampleCanvas = document.createElement("canvas");
+        sampleCanvas.width = sampleWidth;
+        sampleCanvas.height = sampleHeight;
+        const context = sampleCanvas.getContext("2d", {
+          willReadFrequently: true,
+        });
+        if (!context) {
+          throw new Error("2D canvas context unavailable for captureCanvasDigest");
+        }
+        context.drawImage(renderer.domElement, 0, 0, sampleWidth, sampleHeight);
+        const { data } = context.getImageData(0, 0, sampleWidth, sampleHeight);
+
+        let hash = 2166136261 >>> 0;
+        let lumaSum = 0;
+        let nonZeroAlpha = 0;
+        let minLuma = Number.POSITIVE_INFINITY;
+        let maxLuma = Number.NEGATIVE_INFINITY;
+        let alphaSum = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const a = data[i + 3];
+          hash ^= r;
+          hash = Math.imul(hash, 16777619) >>> 0;
+          hash ^= g;
+          hash = Math.imul(hash, 16777619) >>> 0;
+          hash ^= b;
+          hash = Math.imul(hash, 16777619) >>> 0;
+          hash ^= a;
+          hash = Math.imul(hash, 16777619) >>> 0;
+          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          lumaSum += luma;
+          minLuma = Math.min(minLuma, luma);
+          maxLuma = Math.max(maxLuma, luma);
+          alphaSum += a;
+          if (a > 0) {
+            nonZeroAlpha += 1;
+          }
+        }
+
+        const pixelCount = sampleWidth * sampleHeight;
+        return {
+          sourceWidth,
+          sourceHeight,
+          sampleWidth,
+          sampleHeight,
+          pixelCount,
+          hash32: hash >>> 0,
+          meanLuma: pixelCount > 0 ? lumaSum / pixelCount : 0,
+          minLuma: Number.isFinite(minLuma) ? minLuma : 0,
+          maxLuma: Number.isFinite(maxLuma) ? maxLuma : 0,
+          meanAlpha: pixelCount > 0 ? alphaSum / pixelCount : 0,
+          nonZeroAlphaFraction: pixelCount > 0 ? nonZeroAlpha / pixelCount : 0,
+        };
+      };
+
+      window.spark = spark;
+      window.uegsDebug = {
+        mesh,
+        spark,
+        bundle,
+        summary,
+        isReady: () => startupState !== "bootstrapping" && startupState !== "failed",
+        isInteractive: () =>
+          startupState !== "bootstrapping" && startupState !== "failed",
+        isSettled: () => startupSettled,
+        getStartupState: () => ({
+          startupState,
+          startupSettled,
+          startupDiagnostics,
+        }),
+        getRuntimeState,
+        getRenderTelemetry,
+        capturePixelDigest,
+        capturePixelPng,
+        captureCanvasPng,
+        captureCanvasDigest,
+        awaitRenderSync,
+        awaitSortIdle,
+        forceRuntimeRebuild,
+        applySortConfiguration,
+        applySurface2dEnabled,
+        applyRuntimeConfiguration,
+        applyBakedShadowEnabled,
+        applyDirectLightingEnabled,
+        applySkyLightingEnabled,
+        applyAmbientOcclusionEnabled,
+        applyDebugViewMode,
+      };
+
+      renderer.setAnimationLoop((time) => {
+        renderCurrentFrame(time);
+      });
+
+      placeStaticCamera();
+      setStartupState(
+        "bootstrapping",
+        "Initializing UEGS runtime contract for the full bundle…",
+      );
+      renderCurrentFrame();
+      await nextAnimationFrame();
+      spark.update({
+        scene,
+        viewToWorld: spark.defaultView.viewToWorld,
+      });
+      await nextAnimationFrame();
+      setStartupState(
+        "interactive",
+        "UEGS runtime attached. Finalizing sort and render contract in the background…",
+      );
+
+      const finalizeStartup = async () => {
+        let degraded = false;
+        try {
+          setStartupState("syncing", "Synchronizing UEGS runtime state…");
+          await awaitRenderSync({
+            minActiveSplatsVersion: 0,
+            stableFrames: 1,
+            timeoutMs: 60000,
+          });
+        } catch (error) {
+          degraded = true;
+          startupDiagnostics.syncError = formatErrorMessage(error);
+        }
+
+        try {
+          setStartupState("applying-contract", "Applying UEGS render contract…");
+          await applySortConfiguration({
+            sortRadial: sortRadialEnabled,
+            sort32: sort32Enabled,
+            stochastic: stochasticEnabled,
+            force: true,
+          });
+          await applySurface2dEnabled(surface2dEnabled, { force: true });
+          await applyRuntimeConfiguration(
+            {
+              bakedShadow: bakedShadowEnabled,
+              directLighting: directLightingEnabled,
+              skyLighting: skyLightingEnabled,
+              ambientOcclusion: ambientOcclusionEnabled,
+              debugViewMode,
+            },
+            { force: true, rebuild: true },
+          );
+        } catch (error) {
+          degraded = true;
+          startupDiagnostics.contractError = formatErrorMessage(error);
+        }
+
+        if (!degraded) {
+          try {
+            await awaitRenderSync({
+              minActiveSplatsVersion: 0,
+              stableFrames: 2,
+              timeoutMs: 60000,
+            });
+          } catch (error) {
+            degraded = true;
+            startupDiagnostics.finalSyncError = formatErrorMessage(error);
+          }
+        }
+
+        startupSettled = !degraded;
+        setStartupState(
+          degraded ? "degraded" : "settled",
+          degraded
+            ? "UEGS bundle attached, but startup synchronization did not fully settle. Controls remain active."
+            : "Loaded UEGS bundle. Use the lighting and sort toggles for ablation.",
+        );
+      };
+
+      void finalizeStartup().catch(fail);
+    } catch (error) {
+      fail(error);
+    }
+  </script>
+</body>
+
+</html>

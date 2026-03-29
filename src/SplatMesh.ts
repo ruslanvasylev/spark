@@ -39,6 +39,7 @@ import {
   unindent,
   unindentLines,
 } from "./dyno";
+import { configureUegsBundleForMesh } from "./uegs";
 import { getTextureSize } from "./utils";
 
 export type SplatMeshOptions = {
@@ -135,6 +136,7 @@ export class SplatMesh extends SplatGenerator {
 
   objectModifier?: GsplatModifier;
   worldModifier?: GsplatModifier;
+  uegsModifier?: GsplatModifier;
   // Set to true to have the viewToObject property in context be updated each frame.
   // If the mesh has extra.sh1 (first order spherical harmonics directional lighting)
   // this property will always be updated. (default: false)
@@ -203,6 +205,9 @@ export class SplatMesh extends SplatGenerator {
     this.context = context;
     this.objectModifier = options.objectModifier;
     this.worldModifier = options.worldModifier;
+    this.uegsModifier = undefined;
+
+    this.maybeConfigureUegsBundle();
 
     this.updateGenerator();
 
@@ -265,6 +270,7 @@ export class SplatMesh extends SplatGenerator {
     if (this.packedSplats) {
       await this.packedSplats.initialized;
       this.numSplats = this.packedSplats.numSplats;
+      this.maybeConfigureUegsBundle();
       this.updateGenerator();
     }
   }
@@ -450,6 +456,11 @@ export class SplatMesh extends SplatGenerator {
         // Transform from object to world-space
         gsplat = transform.applyGsplat(gsplat);
 
+        if (this.uegsModifier) {
+          // Apply UEGS relightable scene-parity contract before generic tinting.
+          gsplat = this.uegsModifier.apply({ gsplat }).gsplat;
+        }
+
         // Apply any global recoloring and opacity
         const recolorRgba = mul(recolor, splitGsplat(gsplat).outputs.rgba);
         gsplat = combineGsplat({ gsplat, rgba: recolorRgba });
@@ -476,6 +487,10 @@ export class SplatMesh extends SplatGenerator {
   // pipeline structure emerges after successive changes.
   updateGenerator() {
     this.constructGenerator(this.context);
+  }
+
+  maybeConfigureUegsBundle() {
+    configureUegsBundleForMesh(this);
   }
 
   // This is called automatically by SparkRenderer and you should not have to

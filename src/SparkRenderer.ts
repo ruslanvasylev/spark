@@ -23,6 +23,7 @@ import {
   transformGsplat,
 } from "./dyno";
 import { getShaders } from "./shaders";
+import { getUegsSparkRenderContract, getUegsSparkViewContract } from "./uegs";
 import {
   averagePositions,
   averageQuaternions,
@@ -108,6 +109,8 @@ export type SparkRendererOptions = {
    * @default false
    */
   enable2DGS?: boolean;
+  useUegsProjectedEllipse?: boolean;
+  opaqueShellCoverage?: boolean;
   /**
    * Scalar value to add to 2D splat covariance diagonal, effectively blurring +
    * enlarging splats. In scenes trained without the Gsplat anti-aliasing tweak
@@ -179,6 +182,8 @@ export class SparkRenderer extends THREE.Mesh {
   maxPixelRadius: number;
   minAlpha: number;
   enable2DGS: boolean;
+  useUegsProjectedEllipse: boolean;
+  opaqueShellCoverage: boolean;
   preBlurAmount: number;
   blurAmount: number;
   focalDistance: number;
@@ -210,6 +215,21 @@ export class SparkRenderer extends THREE.Mesh {
   private accumulatorCount: number;
   // Default SparkViewpoint used for rendering to the canvas
   defaultView: SparkViewpoint;
+  private defaultViewBaseline: {
+    sortRadial: boolean;
+    sort32?: boolean;
+    stochastic: boolean;
+    sort360?: boolean;
+    depthBias?: number;
+  };
+  private defaultViewUegsContractActive: boolean;
+  private renderContractBaseline: {
+    enable2DGS: boolean;
+    useUegsProjectedEllipse: boolean;
+    opaqueShellCoverage: boolean;
+    maxPixelRadius: number;
+  };
+  private renderContractUegsActive: boolean;
   // List of SparkViewpoints with autoUpdate enabled
   autoViewpoints: SparkViewpoint[] = [];
 
@@ -304,6 +324,8 @@ export class SparkRenderer extends THREE.Mesh {
     this.maxPixelRadius = options.maxPixelRadius ?? 512.0;
     this.minAlpha = options.minAlpha ?? 0.5 * (1.0 / 255.0);
     this.enable2DGS = options.enable2DGS ?? false;
+    this.useUegsProjectedEllipse = options.useUegsProjectedEllipse ?? false;
+    this.opaqueShellCoverage = options.opaqueShellCoverage ?? false;
     this.preBlurAmount = options.preBlurAmount ?? 0.0;
     this.blurAmount = options.blurAmount ?? 0.3;
     this.focalDistance = options.focalDistance ?? 0.0;
@@ -330,6 +352,21 @@ export class SparkRenderer extends THREE.Mesh {
       autoUpdate: true,
       spark: this,
     });
+    this.defaultViewBaseline = {
+      sortRadial: this.defaultView.sortRadial,
+      sort32: this.defaultView.sort32,
+      stochastic: this.defaultView.stochastic,
+      sort360: this.defaultView.sort360,
+      depthBias: this.defaultView.depthBias,
+    };
+    this.defaultViewUegsContractActive = false;
+    this.renderContractBaseline = {
+      enable2DGS: this.enable2DGS,
+      useUegsProjectedEllipse: this.useUegsProjectedEllipse,
+      opaqueShellCoverage: this.opaqueShellCoverage,
+      maxPixelRadius: this.maxPixelRadius,
+    };
+    this.renderContractUegsActive = false;
     this.viewpoint = this.defaultView;
     this.prepareViewpoint(this.viewpoint);
 
@@ -362,6 +399,10 @@ export class SparkRenderer extends THREE.Mesh {
       stochastic: { value: false },
       // Enable interpreting 0-thickness Gsplats as 2DGS
       enable2DGS: { value: false },
+      // Enable UEGS-style projected screen-space ellipses for parity bundles
+      useUegsProjectedEllipse: { value: false },
+      // Treat opaque shell splats as coverage-writing opaque surfaces
+      opaqueShellCoverage: { value: false },
       // Add to projected 2D splat covariance diagonal (thickens and brightens)
       preBlurAmount: { value: 0.0 },
       // Add to 2D splat covariance diagonal and adjust opacity (anti-aliasing)
@@ -543,6 +584,8 @@ export class SparkRenderer extends THREE.Mesh {
     this.uniforms.minAlpha.value = this.minAlpha;
     this.uniforms.stochastic.value = viewpoint.stochastic;
     this.uniforms.enable2DGS.value = this.enable2DGS;
+    this.uniforms.useUegsProjectedEllipse.value = this.useUegsProjectedEllipse;
+    this.uniforms.opaqueShellCoverage.value = this.opaqueShellCoverage;
     this.uniforms.preBlurAmount.value = this.preBlurAmount;
     this.uniforms.blurAmount.value = this.blurAmount;
     this.uniforms.focalDistance.value = this.focalDistance;
@@ -551,10 +594,21 @@ export class SparkRenderer extends THREE.Mesh {
     this.uniforms.clipXY.value = this.clipXY;
     this.uniforms.focalAdjustment.value = this.focalAdjustment;
 
-    if (this.lastStochastic !== !viewpoint.stochastic) {
+    const materialShouldBeTransparent =
+      !viewpoint.stochastic && !this.opaqueShellCoverage;
+    const materialShouldWriteDepth =
+      viewpoint.stochastic || this.opaqueShellCoverage;
+    const materialUsesAlphaToCoverage = false;
+    if (
+      this.lastStochastic !== !viewpoint.stochastic ||
+      this.material.transparent !== materialShouldBeTransparent ||
+      this.material.depthWrite !== materialShouldWriteDepth ||
+      this.material.alphaToCoverage !== materialUsesAlphaToCoverage
+    ) {
       this.lastStochastic = !viewpoint.stochastic;
-      this.material.transparent = !viewpoint.stochastic;
-      this.material.depthWrite = viewpoint.stochastic;
+      this.material.transparent = materialShouldBeTransparent;
+      this.material.depthWrite = materialShouldWriteDepth;
+      this.material.alphaToCoverage = materialUsesAlphaToCoverage;
       this.material.needsUpdate = true;
     }
 
@@ -617,8 +671,11 @@ export class SparkRenderer extends THREE.Mesh {
         accumulator.splats.splatEncoding?.lnScaleMax ?? LN_SCALE_MAX,
       );
       this.geometry = geometry;
-      this.material.transparent = !this.viewpoint.stochastic;
-      this.material.depthWrite = this.viewpoint.stochastic;
+      this.material.transparent =
+        !this.viewpoint.stochastic && !this.opaqueShellCoverage;
+      this.material.depthWrite =
+        this.viewpoint.stochastic || this.opaqueShellCoverage;
+      this.material.alphaToCoverage = false;
       this.material.needsUpdate = true;
     } else {
       // No Gsplats to display for this viewpoint yet
@@ -707,6 +764,8 @@ export class SparkRenderer extends THREE.Mesh {
     // Traverse visible scene to find all SplatGenerators and global SplatEdits
     const { generators, visibleGenerators, globalEdits } =
       this.compileScene(scene);
+    const defaultViewContractChanged =
+      this.syncDefaultViewToVisibleUegsContract(visibleGenerators);
 
     // Let all SplatGenerators run their frameUpdate() method
     for (const object of generators) {
@@ -848,7 +907,11 @@ export class SparkRenderer extends THREE.Mesh {
     setTimeout(() => {
       // Notify all auto-updating viewpoints that we updated the Gsplats
       for (const view of this.autoViewpoints) {
-        view.autoPoll({ accumulator: accumulator ?? undefined });
+        const nextAccumulator =
+          view === this.defaultView && defaultViewContractChanged
+            ? this.active
+            : (accumulator ?? undefined);
+        view.autoPoll({ accumulator: nextAccumulator });
       }
     }, 1);
 
@@ -897,6 +960,90 @@ export class SparkRenderer extends THREE.Mesh {
       visibleGenerators,
       globalEdits: Array.from(globalEdits),
     };
+  }
+
+  private syncDefaultViewToVisibleUegsContract(
+    visibleGenerators: SplatGenerator[],
+  ): boolean {
+    let nextContract:
+      | {
+          sortRadial: boolean;
+          sort32?: boolean;
+          stochastic: boolean;
+          sort360?: boolean;
+          depthBias?: number;
+        }
+      | undefined;
+    let nextRenderContract:
+      | {
+          enable2DGS: boolean;
+          useUegsProjectedEllipse: boolean;
+          opaqueShellCoverage: boolean;
+          maxPixelRadius: number;
+        }
+      | undefined;
+
+    for (const generator of visibleGenerators) {
+      if (!(generator instanceof SplatMesh)) {
+        continue;
+      }
+      nextContract = getUegsSparkViewContract(generator);
+      nextRenderContract = getUegsSparkRenderContract(generator);
+      if (nextContract || nextRenderContract) {
+        break;
+      }
+    }
+
+    let changed = false;
+
+    const hasContract = Boolean(nextContract);
+    if (hasContract !== this.defaultViewUegsContractActive) {
+      this.defaultViewUegsContractActive = hasContract;
+      const target = nextContract ?? this.defaultViewBaseline;
+      if (
+        this.defaultView.sortRadial !== target.sortRadial ||
+        this.defaultView.sort32 !== target.sort32 ||
+        this.defaultView.stochastic !== target.stochastic ||
+        this.defaultView.sort360 !== target.sort360 ||
+        this.defaultView.depthBias !== target.depthBias
+      ) {
+        this.defaultView.sortRadial = target.sortRadial;
+        this.defaultView.sort32 = target.sort32;
+        this.defaultView.stochastic = target.stochastic;
+        this.defaultView.sort360 = target.sort360;
+        this.defaultView.depthBias = target.depthBias;
+        changed = true;
+      }
+    }
+
+    const hasRenderContract = Boolean(nextRenderContract);
+    const targetEnable2DGS =
+      nextRenderContract?.enable2DGS ?? this.renderContractBaseline.enable2DGS;
+    const targetUseUegsProjectedEllipse =
+      nextRenderContract?.useUegsProjectedEllipse ??
+      this.renderContractBaseline.useUegsProjectedEllipse;
+    const targetOpaqueShellCoverage =
+      nextRenderContract?.opaqueShellCoverage ??
+      this.renderContractBaseline.opaqueShellCoverage;
+    const targetMaxPixelRadius =
+      nextRenderContract?.maxPixelRadius ??
+      this.renderContractBaseline.maxPixelRadius;
+    if (
+      hasRenderContract !== this.renderContractUegsActive ||
+      this.enable2DGS !== targetEnable2DGS ||
+      this.useUegsProjectedEllipse !== targetUseUegsProjectedEllipse ||
+      this.opaqueShellCoverage !== targetOpaqueShellCoverage ||
+      this.maxPixelRadius !== targetMaxPixelRadius
+    ) {
+      this.renderContractUegsActive = hasRenderContract;
+      this.enable2DGS = targetEnable2DGS;
+      this.useUegsProjectedEllipse = targetUseUegsProjectedEllipse;
+      this.opaqueShellCoverage = targetOpaqueShellCoverage;
+      this.maxPixelRadius = targetMaxPixelRadius;
+      changed = true;
+    }
+
+    return changed;
   }
 
   // Renders out the scene to an environment map that can be used for

@@ -48,6 +48,7 @@ export declare class SplatMesh extends SplatGenerator {
     }) => void;
     objectModifier?: GsplatModifier;
     worldModifier?: GsplatModifier;
+    uegsModifier?: GsplatModifier;
     enableViewToObject: boolean;
     enableViewToWorld: boolean;
     enableWorldToView: boolean;
@@ -69,6 +70,7 @@ export declare class SplatMesh extends SplatGenerator {
     getBoundingBox(centers_only?: boolean): THREE.Box3;
     constructGenerator(context: SplatMeshContext): void;
     updateGenerator(): void;
+    maybeConfigureUegsBundle(): void;
     update({ time, viewToWorld, deltaTime, globalEdits, }: {
         time: number;
         viewToWorld: THREE.Matrix4;

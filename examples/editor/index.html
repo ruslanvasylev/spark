@@ -140,6 +140,7 @@
       stats: false,
       resetOnLoad: true,
       loadOffset: 0,
+      initialMaxSh: null,
       openCv: true,
       autoRotate: true,
       orbit: false,
@@ -194,6 +195,24 @@
       return urls;
     }
 
+    function parseBooleanQuery(urlParams, ...keys) {
+      for (const key of keys) {
+        const value = urlParams.get(key);
+        if (value === null) {
+          continue;
+        }
+        return value !== "0" && value.toLowerCase() !== "false";
+      }
+      return null;
+    }
+
+    function normalizeColorQuery(value) {
+      if (!value) {
+        return null;
+      }
+      return value.startsWith("#") ? value : `#${value}`;
+    }
+
     // Parse and apply camera parameters from URL
     function applyCameraFromQuery() {
       const urlParams = new URLSearchParams(window.location.search);
@@ -224,6 +243,58 @@
           qz !== null ? parseFloat(qz) : camera.quaternion.z,
           qw !== null ? parseFloat(qw) : camera.quaternion.w
         ).normalize();
+      }
+
+      const fov = urlParams.get("fov");
+      if (fov !== null) {
+        camera.fov = parseFloat(fov);
+        camera.updateProjectionMatrix();
+      }
+
+      const openCv = parseBooleanQuery(urlParams, "openCv", "opencv");
+      if (openCv !== null) {
+        guiOptions.openCv = openCv;
+        resetFrameQuaternion();
+      }
+
+      const backgroundColor = normalizeColorQuery(
+        urlParams.get("bg") ?? urlParams.get("background")
+      );
+      if (backgroundColor) {
+        guiOptions.backgroundColor = backgroundColor;
+      }
+
+      const maxSh = urlParams.get("maxSh");
+      if (maxSh !== null) {
+        const parsedMaxSh = parseInt(maxSh, 10);
+        if (Number.isFinite(parsedMaxSh)) {
+          guiOptions.initialMaxSh = Math.max(0, Math.min(3, parsedMaxSh));
+        }
+      }
+
+      const hideUiRequested = parseBooleanQuery(urlParams, "hideUi", "ui");
+      if (hideUiRequested === false) {
+        document.getElementById("main-gui").style.display = "none";
+        document.getElementById("second-gui").style.display = "none";
+        stats.dom.style.display = "none";
+        document.getElementById("progress-bar").style.display = "none";
+      }
+    }
+
+    function applyViewpointFromQuery() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const sortRadial = parseBooleanQuery(urlParams, "sortRadial");
+      const sort32 = parseBooleanQuery(urlParams, "sort32");
+      const stochastic = parseBooleanQuery(urlParams, "stochastic");
+
+      if (sortRadial !== null) {
+        spark.defaultView.sortRadial = sortRadial;
+      }
+      if (sort32 !== null) {
+        spark.defaultView.sort32 = sort32;
+      }
+      if (stochastic !== null) {
+        spark.defaultView.stochastic = stochastic;
       }
     }
 
@@ -351,8 +422,13 @@
         splatsFolder.foldersRecursive().forEach((child) => child.destroy());
       }
 
+      const urlParams = new URLSearchParams(window.location.search);
+      const openCvOverride = parseBooleanQuery(urlParams, "openCv", "opencv");
       guiOptions.openCv = true;
       guiOptions.autoRotate = false;
+      if (openCvOverride !== null) {
+        guiOptions.openCv = openCvOverride;
+      }
       resetFrameQuaternion();
       writeOptions.filename = "";
 
@@ -398,6 +474,10 @@
           splatMesh.enableWorldToView = true;
           splatMesh.worldModifier = makeWorldModifier(splatMesh);
           await splatMesh.initialized;
+          if (guiOptions.initialMaxSh !== null) {
+            splatMesh.maxSh = guiOptions.initialMaxSh;
+            splatMesh.updateGenerator();
+          }
 
           if (!url) {
             // PC SOGS transcode not supported yet
@@ -482,6 +562,156 @@
         controls.pointerControls.reverseSwipe = value;
       });
 
+    const renderCurrentFrame = () => {
+      renderer.render(scene, camera);
+    };
+
+    const readRenderedPixels = () => {
+      const width = renderer.domElement.width;
+      const height = renderer.domElement.height;
+      const target = new THREE.WebGLRenderTarget(width, height, {
+        format: THREE.RGBAFormat,
+        type: THREE.UnsignedByteType,
+      });
+      const pixels = new Uint8Array(width * height * 4);
+      const previousTarget = renderer.getRenderTarget();
+      renderer.setRenderTarget(target);
+      renderCurrentFrame();
+      renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+      renderer.setRenderTarget(previousTarget);
+      target.dispose();
+      return { width, height, pixels };
+    };
+
+    const capturePixelDigest = () => {
+      const { width, height, pixels } = readRenderedPixels();
+      let hash = 2166136261 >>> 0;
+      let lumaSum = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i];
+        const g = pixels[i + 1];
+        const b = pixels[i + 2];
+        hash ^= r;
+        hash = Math.imul(hash, 16777619) >>> 0;
+        hash ^= g;
+        hash = Math.imul(hash, 16777619) >>> 0;
+        hash ^= b;
+        hash = Math.imul(hash, 16777619) >>> 0;
+        lumaSum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      }
+
+      const pixelCount = width * height;
+      return {
+        width,
+        height,
+        pixelCount,
+        hash32: hash >>> 0,
+        meanLuma: pixelCount > 0 ? lumaSum / pixelCount : 0,
+      };
+    };
+
+    const capturePixelPng = () => {
+      const { width, height, pixels } = readRenderedPixels();
+      const canvas2d = document.createElement("canvas");
+      canvas2d.width = width;
+      canvas2d.height = height;
+      const context = canvas2d.getContext("2d");
+      if (!context) {
+        throw new Error("2D canvas context unavailable for capturePixelPng");
+      }
+      const imageData = context.createImageData(width, height);
+      for (let row = 0; row < height; row += 1) {
+        const sourceOffset = row * width * 4;
+        const targetOffset = (height - row - 1) * width * 4;
+        imageData.data.set(
+          pixels.subarray(sourceOffset, sourceOffset + width * 4),
+          targetOffset,
+        );
+      }
+      context.putImageData(imageData, 0, 0);
+      return canvas2d.toDataURL("image/png");
+    };
+
+    const captureCanvasPng = () => {
+      renderCurrentFrame();
+      return renderer.domElement.toDataURL("image/png");
+    };
+
+    const captureCanvasDigest = () => {
+      renderCurrentFrame();
+      const sourceWidth = renderer.domElement.width;
+      const sourceHeight = renderer.domElement.height;
+      const maxDimension = 256;
+      const scale = Math.min(
+        1,
+        maxDimension / Math.max(sourceWidth, sourceHeight, 1),
+      );
+      const sampleWidth = Math.max(1, Math.round(sourceWidth * scale));
+      const sampleHeight = Math.max(1, Math.round(sourceHeight * scale));
+      const sampleCanvas = document.createElement("canvas");
+      sampleCanvas.width = sampleWidth;
+      sampleCanvas.height = sampleHeight;
+      const sampleContext = sampleCanvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+      if (!sampleContext) {
+        throw new Error("2D canvas context unavailable for captureCanvasDigest");
+      }
+      sampleContext.drawImage(
+        renderer.domElement,
+        0,
+        0,
+        sourceWidth,
+        sourceHeight,
+        0,
+        0,
+        sampleWidth,
+        sampleHeight,
+      );
+      const pixels = sampleContext.getImageData(
+        0,
+        0,
+        sampleWidth,
+        sampleHeight,
+      ).data;
+      let hash = 2166136261 >>> 0;
+      let rgbSum = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        hash ^= pixels[i];
+        hash = Math.imul(hash, 16777619) >>> 0;
+        hash ^= pixels[i + 1];
+        hash = Math.imul(hash, 16777619) >>> 0;
+        hash ^= pixels[i + 2];
+        hash = Math.imul(hash, 16777619) >>> 0;
+        rgbSum += pixels[i] + pixels[i + 1] + pixels[i + 2];
+      }
+      return {
+        width: sampleWidth,
+        height: sampleHeight,
+        hash32: hash >>> 0,
+        meanRgb:
+          rgbSum / Math.max(1, sampleWidth * sampleHeight * 3),
+      };
+    };
+
+    window.spark = spark;
+    window.frame = frame;
+    window.scene = scene;
+    window.editorDebug = {
+      spark,
+      frame,
+      scene,
+      camera,
+      renderer,
+      renderCurrentFrame,
+      capturePixelDigest,
+      capturePixelPng,
+      captureCanvasPng,
+      captureCanvasDigest,
+      getMeshes: () =>
+        frame.children.filter((child) => child instanceof SplatMesh),
+    };
+
     function setHighDpi(value) {
       renderer.setPixelRatio(value ? window.devicePixelRatio : 1);
       const width = canvas.clientWidth;
@@ -512,7 +742,14 @@
 
     const debugFolder = gui.addFolder("Debug").close();
     const normalColor = dyno.dynoBool(false);
-    debugFolder.add(normalColor, "value").name("Normal color").onChange(() => updateFrameSplats());
+    {
+      const urlParams = new URLSearchParams(window.location.search);
+      const normalColorOverride = parseBooleanQuery(urlParams, "normalColor", "normal");
+      if (normalColorOverride !== null) {
+        normalColor.value = normalColorOverride;
+      }
+    }
+    debugFolder.add(normalColor, "value").name("Ellipsoid normal color").onChange(() => updateFrameSplats());
     debugFolder.add(guiOptions, "viewBoundingBox").name("View bounding boxes").onChange((viewBoundingBox) => {
       frame.children.forEach((child) => {
         if (child instanceof THREE.Box3Helper) {
@@ -546,6 +783,7 @@
 
     debugFolder.add(spark, "premultipliedAlpha").name("Premultiplied alpha").listen();
     debugFolder.add(spark.defaultView, "stochastic").name("Stochastic sort-free").listen().onChange(touch);
+    applyViewpointFromQuery();
 
     const accumFolder = debugFolder.addFolder("Accumulator encoding").close();;
     accumFolder.add(spark.splatEncoding, "rgbMin", -1, 1, 0.1).name("RGB min").onChange(touch);
@@ -807,7 +1045,7 @@
         controls.update(camera);
       }
 
-      renderer.render(scene, camera);
+      renderCurrentFrame();
 
       stats.end();
     });

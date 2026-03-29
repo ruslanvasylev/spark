@@ -72,6 +72,8 @@ export type SparkRendererOptions = {
      * @default false
      */
     enable2DGS?: boolean;
+    useUegsProjectedEllipse?: boolean;
+    opaqueShellCoverage?: boolean;
     /**
      * Scalar value to add to 2D splat covariance diagonal, effectively blurring +
      * enlarging splats. In scenes trained without the Gsplat anti-aliasing tweak
@@ -141,6 +143,8 @@ export declare class SparkRenderer extends THREE.Mesh {
     maxPixelRadius: number;
     minAlpha: number;
     enable2DGS: boolean;
+    useUegsProjectedEllipse: boolean;
+    opaqueShellCoverage: boolean;
     preBlurAmount: number;
     blurAmount: number;
     focalDistance: number;
@@ -165,6 +169,10 @@ export declare class SparkRenderer extends THREE.Mesh {
     private freeAccumulators;
     private accumulatorCount;
     defaultView: SparkViewpoint;
+    private defaultViewBaseline;
+    private defaultViewUegsContractActive;
+    private renderContractBaseline;
+    private renderContractUegsActive;
     autoViewpoints: SparkViewpoint[];
     private rotateToAccumulator;
     private translateToAccumulator;
@@ -215,6 +223,12 @@ export declare class SparkRenderer extends THREE.Mesh {
             value: boolean;
         };
         enable2DGS: {
+            value: boolean;
+        };
+        useUegsProjectedEllipse: {
+            value: boolean;
+        };
+        opaqueShellCoverage: {
             value: boolean;
         };
         preBlurAmount: {
@@ -296,6 +310,7 @@ export declare class SparkRenderer extends THREE.Mesh {
         viewToWorld?: THREE.Matrix4;
     }): boolean;
     private compileScene;
+    private syncDefaultViewToVisibleUegsContract;
     renderEnvMap({ renderer, scene, worldCenter, size, near, far, hideObjects, update, }: {
         renderer?: THREE.WebGLRenderer;
         scene: THREE.Scene;

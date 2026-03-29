@@ -393,6 +393,8 @@ async function unpackSpz(
   const maxSplats = computeMaxSplats(numSplats);
   const packedArray = new Uint32Array(maxSplats * 4);
   const extra: Record<string, unknown> = {};
+  const exactScales = new Float32Array(numSplats * 4);
+  const exactQuaternions = new Float32Array(numSplats * 4);
 
   await spz.parseSplats(
     (index, x, y, z) => {
@@ -405,6 +407,11 @@ async function unpackSpz(
       setPackedSplatRgb(packedArray, index, r, g, b, splatEncoding);
     },
     (index, scaleX, scaleY, scaleZ) => {
+      const base = index * 4;
+      exactScales[base + 0] = scaleX;
+      exactScales[base + 1] = scaleY;
+      exactScales[base + 2] = scaleZ;
+      exactScales[base + 3] = 0;
       setPackedSplatScales(
         packedArray,
         index,
@@ -415,6 +422,11 @@ async function unpackSpz(
       );
     },
     (index, quatX, quatY, quatZ, quatW) => {
+      const base = index * 4;
+      exactQuaternions[base + 0] = quatX;
+      exactQuaternions[base + 1] = quatY;
+      exactQuaternions[base + 2] = quatZ;
+      exactQuaternions[base + 3] = quatW;
       setPackedSplatQuat(packedArray, index, quatX, quatY, quatZ, quatW);
     },
     (index, sh1, sh2, sh3) => {
@@ -438,6 +450,10 @@ async function unpackSpz(
       }
     },
   );
+  extra.spzExactGeometry = {
+    scales: exactScales,
+    quaternions: exactQuaternions,
+  };
   return { packedArray, numSplats, extra };
 }
 

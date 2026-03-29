@@ -15,6 +15,8 @@ uniform float minAlpha;
 uniform bool stochastic;
 uniform bool disableFalloff;
 uniform float falloff;
+uniform bool useUegsProjectedEllipse;
+uniform bool opaqueShellCoverage;
 
 uniform bool splatTexEnable;
 uniform sampler3D splatTexture;
@@ -29,14 +31,18 @@ out vec4 fragColor;
 in vec4 vRgba;
 in vec2 vSplatUv;
 in vec3 vNdc;
+in vec3 vConic;
+in vec2 vScreenCenter;
 flat in uint vSplatIndex;
+
+const float UEGS_OPAQUE_SHELL_MIN_ALPHA = 0.002;
 
 void main() {
     vec4 rgba = vRgba;
 
     float z = dot(vSplatUv, vSplatUv);
     if (!splatTexEnable) {
-        if (z > (maxStdDev * maxStdDev)) {
+        if (!useUegsProjectedEllipse && z > (maxStdDev * maxStdDev)) {
             discard;
         }
     } else {
@@ -64,9 +70,18 @@ void main() {
         rgba *= modulate;
     }
 
-    rgba.a *= mix(1.0, exp(-0.5 * z), falloff);
+    if (useUegsProjectedEllipse) {
+        vec2 delta = vScreenCenter - gl_FragCoord.xy;
+        float exponent = dot(vConic.xzy, vec3(delta * delta, delta.x * delta.y));
+        rgba.a *= exp(exponent);
+    } else {
+        rgba.a *= mix(1.0, exp(-0.5 * z), falloff);
+    }
 
-    if (rgba.a < minAlpha) {
+    float alphaDiscardThreshold = opaqueShellCoverage
+        ? max(minAlpha, UEGS_OPAQUE_SHELL_MIN_ALPHA)
+        : minAlpha;
+    if (rgba.a < alphaDiscardThreshold) {
         discard;
     }
     if (encodeLinear) {
@@ -87,6 +102,8 @@ void main() {
         } else {
             discard;
         }
+    } else if (opaqueShellCoverage) {
+        fragColor = vec4(rgba.rgb, 1.0);
     } else {
         #ifdef PREMULTIPLIED_ALPHA
             fragColor = vec4(rgba.rgb * rgba.a, rgba.a);

@@ -8,6 +8,7 @@ import {
 import { SplatMesh } from "./SplatMesh";
 import { PlyReader } from "./ply";
 import { withWorker } from "./splatWorker";
+import { loadOptionalUegsBundleFromUrl } from "./uegs";
 import { decompressPartialGzip, getTextureSize } from "./utils";
 
 // SplatLoader implements the THREE.Loader interface and supports loading a variety
@@ -116,6 +117,10 @@ export class SplatLoader extends Loader {
         if (onLoad) {
           const splatEncoding =
             this.packedSplats?.splatEncoding ?? DEFAULT_SPLAT_ENCODING;
+          const uegsBundle = await loadOptionalUegsBundleFromUrl(resolvedURL, {
+            headers,
+            credentials,
+          });
           const decoded = await unpackSplats({
             input,
             extraFiles,
@@ -123,6 +128,15 @@ export class SplatLoader extends Loader {
             pathOrUrl: resolvedURL,
             splatEncoding,
           });
+          if (uegsBundle) {
+            if (uegsBundle.payload.header.recordCount !== decoded.numSplats) {
+              throw new Error(
+                `UEGS sidecar record count ${uegsBundle.payload.header.recordCount} does not match decoded splat count ${decoded.numSplats}`,
+              );
+            }
+            decoded.extra = decoded.extra ?? {};
+            decoded.extra.uegsBundle = uegsBundle;
+          }
 
           if (this.packedSplats) {
             this.packedSplats.initialize(decoded);
