@@ -7301,7 +7301,11 @@ function convertUegsQuaternionToSpzBasis(value) {
   return quaternionFromAxes(spzAxisX, spzAxisY, orthonormalAxisZ);
 }
 function convertUegsExtentToSpzBasis(value) {
-  return new THREE.Vector3(Math.abs(value.y), Math.abs(value.z), Math.abs(value.x));
+  return new THREE.Vector3(
+    Math.abs(value.y),
+    Math.abs(value.z),
+    Math.abs(value.x)
+  );
 }
 function createEmptyScalarStats() {
   return {
@@ -7405,9 +7409,91 @@ function makeFloatTexture2D(data, width, height) {
 function parseUegsManifest(json) {
   const root = typeof json === "string" ? assertObject(JSON.parse(json), "UEGS manifest") : json;
   if (root.tool !== "UEGS") {
-    throw new Error(`Invalid UEGS manifest: expected tool=UEGS, got ${String(root.tool)}`);
+    throw new Error(
+      `Invalid UEGS manifest: expected tool=UEGS, got ${String(root.tool)}`
+    );
   }
   return root;
+}
+function parseUegsComparisonViewpoint(manifest) {
+  const viewpoint = manifest == null ? void 0 : manifest.comparison_viewpoint;
+  if (!viewpoint) {
+    return null;
+  }
+  const rawPosition = new THREE.Vector3(
+    Number(viewpoint.position_x_cm),
+    Number(viewpoint.position_y_cm),
+    Number(viewpoint.position_z_cm)
+  );
+  const rawQuaternion = new THREE.Quaternion(
+    Number(viewpoint.quaternion_x),
+    Number(viewpoint.quaternion_y),
+    Number(viewpoint.quaternion_z),
+    Number(viewpoint.quaternion_w)
+  );
+  const hasFinitePose = Number.isFinite(rawPosition.x) && Number.isFinite(rawPosition.y) && Number.isFinite(rawPosition.z) && Number.isFinite(rawQuaternion.x) && Number.isFinite(rawQuaternion.y) && Number.isFinite(rawQuaternion.z) && Number.isFinite(rawQuaternion.w);
+  if (!hasFinitePose) {
+    return null;
+  }
+  const position = convertUegsPositionToSpzBasis(rawPosition);
+  const quaternion = convertUegsQuaternionToSpzBasis(rawQuaternion);
+  return {
+    source: typeof viewpoint.source === "string" ? viewpoint.source : void 0,
+    positionX: position.x,
+    positionY: position.y,
+    positionZ: position.z,
+    quaternionX: quaternion.x,
+    quaternionY: quaternion.y,
+    quaternionZ: quaternion.z,
+    quaternionW: quaternion.w,
+    verticalFovDegrees: Number(viewpoint.vertical_fov_degrees),
+    sparkOpenCv: viewpoint.spark_open_cv == null ? null : Boolean(viewpoint.spark_open_cv)
+  };
+}
+function scaleUegsComparisonViewpointToSceneBounds(comparisonViewpoint, manifest, sceneBounds) {
+  if (!comparisonViewpoint) {
+    return null;
+  }
+  const manifestBounds = manifest == null ? void 0 : manifest.bounds;
+  if (!manifestBounds || !sceneBounds || sceneBounds.isEmpty()) {
+    return comparisonViewpoint;
+  }
+  const rawManifestOrigin = new THREE.Vector3(
+    Number(manifestBounds.origin_x_cm),
+    Number(manifestBounds.origin_y_cm),
+    Number(manifestBounds.origin_z_cm)
+  );
+  const rawManifestExtent = new THREE.Vector3(
+    Number(manifestBounds.extent_x_cm),
+    Number(manifestBounds.extent_y_cm),
+    Number(manifestBounds.extent_z_cm)
+  );
+  const hasFiniteBounds = Number.isFinite(rawManifestOrigin.x) && Number.isFinite(rawManifestOrigin.y) && Number.isFinite(rawManifestOrigin.z) && Number.isFinite(rawManifestExtent.x) && Number.isFinite(rawManifestExtent.y) && Number.isFinite(rawManifestExtent.z);
+  if (!hasFiniteBounds) {
+    return comparisonViewpoint;
+  }
+  const manifestOrigin = convertUegsPositionToSpzBasis(rawManifestOrigin);
+  const manifestExtent = convertUegsExtentToSpzBasis(rawManifestExtent);
+  const sceneSize = sceneBounds.getSize(new THREE.Vector3());
+  const candidateRatios = [sceneSize.x, sceneSize.y, sceneSize.z].map((value, index) => {
+    const denominator = manifestExtent.getComponent(index);
+    return denominator > 1e-6 ? value / denominator : Number.NaN;
+  }).filter((value) => Number.isFinite(value) && value > 1e-6);
+  if (candidateRatios.length === 0) {
+    return comparisonViewpoint;
+  }
+  const positionScale = Math.max(...candidateRatios);
+  const scaledPosition = new THREE.Vector3(
+    comparisonViewpoint.positionX,
+    comparisonViewpoint.positionY,
+    comparisonViewpoint.positionZ
+  ).sub(manifestOrigin).multiplyScalar(positionScale).add(manifestOrigin);
+  return {
+    ...comparisonViewpoint,
+    positionX: scaledPosition.x,
+    positionY: scaledPosition.y,
+    positionZ: scaledPosition.z
+  };
 }
 function parseUegsSceneLightingContract(json) {
   const root = typeof json === "string" ? assertObject(JSON.parse(json), "UEGS scene lighting contract") : json;
@@ -7421,9 +7507,18 @@ function parseUegsSceneLightingContract(json) {
     return {
       direction: convertUegsDirectionToSpzBasis(
         new THREE.Vector3(
-          assertNumber(light.direction_x, `directional_lights[${index}].direction_x`),
-          assertNumber(light.direction_y, `directional_lights[${index}].direction_y`),
-          assertNumber(light.direction_z, `directional_lights[${index}].direction_z`)
+          assertNumber(
+            light.direction_x,
+            `directional_lights[${index}].direction_x`
+          ),
+          assertNumber(
+            light.direction_y,
+            `directional_lights[${index}].direction_y`
+          ),
+          assertNumber(
+            light.direction_z,
+            `directional_lights[${index}].direction_z`
+          )
         )
       ).normalize(),
       color: new THREE.Color(
@@ -7431,7 +7526,10 @@ function parseUegsSceneLightingContract(json) {
         assertNumber(light.color_g, `directional_lights[${index}].color_g`),
         assertNumber(light.color_b, `directional_lights[${index}].color_b`)
       ),
-      intensity: assertNumber(light.intensity, `directional_lights[${index}].intensity`),
+      intensity: assertNumber(
+        light.intensity,
+        `directional_lights[${index}].intensity`
+      ),
       castsShadows: Boolean(light.casts_shadows)
     };
   }) : [];
@@ -7442,16 +7540,34 @@ function parseUegsSceneLightingContract(json) {
       type: type === "spot" ? "spot" : "point",
       position: convertUegsPositionToSpzBasis(
         new THREE.Vector3(
-          assertNumber(light.position_x, `local_lights[${index}].position_x`),
-          assertNumber(light.position_y, `local_lights[${index}].position_y`),
-          assertNumber(light.position_z, `local_lights[${index}].position_z`)
+          assertNumber(
+            light.position_x,
+            `local_lights[${index}].position_x`
+          ),
+          assertNumber(
+            light.position_y,
+            `local_lights[${index}].position_y`
+          ),
+          assertNumber(
+            light.position_z,
+            `local_lights[${index}].position_z`
+          )
         )
       ),
       direction: convertUegsDirectionToSpzBasis(
         new THREE.Vector3(
-          assertNumber(light.direction_x, `local_lights[${index}].direction_x`),
-          assertNumber(light.direction_y, `local_lights[${index}].direction_y`),
-          assertNumber(light.direction_z, `local_lights[${index}].direction_z`)
+          assertNumber(
+            light.direction_x,
+            `local_lights[${index}].direction_x`
+          ),
+          assertNumber(
+            light.direction_y,
+            `local_lights[${index}].direction_y`
+          ),
+          assertNumber(
+            light.direction_z,
+            `local_lights[${index}].direction_z`
+          )
         )
       ).normalize(),
       color: new THREE.Color(
@@ -7459,7 +7575,10 @@ function parseUegsSceneLightingContract(json) {
         assertNumber(light.color_g, `local_lights[${index}].color_g`),
         assertNumber(light.color_b, `local_lights[${index}].color_b`)
       ),
-      intensity: assertNumber(light.intensity, `local_lights[${index}].intensity`),
+      intensity: assertNumber(
+        light.intensity,
+        `local_lights[${index}].intensity`
+      ),
       attenuationRadiusCm: assertNumber(
         light.attenuation_radius_cm,
         `local_lights[${index}].attenuation_radius_cm`
@@ -7477,7 +7596,10 @@ function parseUegsSceneLightingContract(json) {
         assertNumber(light.color_g, `sky_lights[${index}].color_g`),
         assertNumber(light.color_b, `sky_lights[${index}].color_b`)
       ),
-      intensity: assertNumber(light.intensity, `sky_lights[${index}].intensity`),
+      intensity: assertNumber(
+        light.intensity,
+        `sky_lights[${index}].intensity`
+      ),
       realTimeCapture: Boolean(light.real_time_capture)
     };
   }) : [];
@@ -7486,7 +7608,9 @@ function parseUegsSceneLightingContract(json) {
     linearSceneColor: Boolean(root.linear_scene_color),
     toneMappingApplied: Boolean(root.tone_mapping_applied),
     lensEffectsApplied: Boolean(root.lens_effects_applied),
-    materialAmbientOcclusionExported: Boolean(root.material_ambient_occlusion_exported),
+    materialAmbientOcclusionExported: Boolean(
+      root.material_ambient_occlusion_exported
+    ),
     geometryContactShadowApproximationExpected: Boolean(
       root.geometry_contact_shadow_approximation_expected
     ),
@@ -7668,10 +7792,7 @@ function parseUegsGaussianPayload(input) {
     updateScalarStats(ambientOcclusionStats, ambientOcclusion);
     updateScalarStats(bakedShadowStats, bakedShadow);
     updateScalarStats(opacityStats, opacity);
-    updateScalarStats(
-      normalLengthStats,
-      normal.length()
-    );
+    updateScalarStats(normalLengthStats, normal.length());
   }
   const telemetry = {
     recordCount,
@@ -7928,7 +8049,9 @@ function inspectUegsRuntimeTelemetry(mesh) {
   };
 }
 function buildDirectionalLightTexture(contract) {
-  const data = new Float32Array(Math.max(contract.directionalLights.length, 1) * 8);
+  const data = new Float32Array(
+    Math.max(contract.directionalLights.length, 1) * 8
+  );
   contract.directionalLights.slice(0, MAX_DIRECTIONAL_LIGHTS).forEach((light, index) => {
     const base = index * 8;
     data[base + 0] = light.direction.x;
@@ -7940,7 +8063,11 @@ function buildDirectionalLightTexture(contract) {
     data[base + 6] = light.color.b;
     data[base + 7] = light.castsShadows ? 1 : 0;
   });
-  return makeFloatTexture2D(data, 2, Math.max(contract.directionalLights.length, 1));
+  return makeFloatTexture2D(
+    data,
+    2,
+    Math.max(contract.directionalLights.length, 1)
+  );
 }
 function buildLocalLightTexture(contract) {
   const data = new Float32Array(Math.max(contract.localLights.length, 1) * 16);
@@ -7986,7 +8113,10 @@ function resolveUegsExactGeometrySources(bundle, extra) {
     };
   }
   const recordCount = bundle.payload.header.recordCount;
-  const payloadExactGeometry = hasExactGeometryValues(bundle.payload.exactGeometry.centers, recordCount) && hasExactGeometryValues(bundle.payload.exactGeometry.scales, recordCount) && hasExactGeometryValues(bundle.payload.exactGeometry.quaternions, recordCount) ? bundle.payload.exactGeometry : void 0;
+  const payloadExactGeometry = hasExactGeometryValues(bundle.payload.exactGeometry.centers, recordCount) && hasExactGeometryValues(bundle.payload.exactGeometry.scales, recordCount) && hasExactGeometryValues(
+    bundle.payload.exactGeometry.quaternions,
+    recordCount
+  ) ? bundle.payload.exactGeometry : void 0;
   const spzExactGeometry = extra.spzExactGeometry && hasExactGeometryValues(extra.spzExactGeometry.scales, recordCount) && hasExactGeometryValues(extra.spzExactGeometry.quaternions, recordCount) ? extra.spzExactGeometry : void 0;
   const preference = extra.uegsRenderGeometryPreference ?? "hybrid";
   let renderExactGeometry;
@@ -8021,8 +8151,17 @@ function ensureUegsGpuResources(packedSplats) {
   if (extra.uegsGpuResources) {
     return extra.uegsGpuResources;
   }
-  const { textureSize: textureSize2, normalRoughness, baseMetallic, emissiveAmbientOcclusion, bakedShadowOpacity } = bundle.payload;
-  const { renderExactGeometry } = resolveUegsExactGeometrySources(bundle, extra);
+  const {
+    textureSize: textureSize2,
+    normalRoughness,
+    baseMetallic,
+    emissiveAmbientOcclusion,
+    bakedShadowOpacity
+  } = bundle.payload;
+  const { renderExactGeometry } = resolveUegsExactGeometrySources(
+    bundle,
+    extra
+  );
   const normalRoughnessTexture = new DynoSampler2DArray({
     key: "uegsNormalRoughness",
     value: makeFloatTextureArray(
@@ -8062,7 +8201,10 @@ function ensureUegsGpuResources(packedSplats) {
   const exactQuaternionTexture = new DynoSampler2DArray({
     key: "uegsExactQuaternion",
     value: makeFloatTextureArray(
-      buildExactGeometryTextureData(renderExactGeometry == null ? void 0 : renderExactGeometry.quaternions, textureSize2),
+      buildExactGeometryTextureData(
+        renderExactGeometry == null ? void 0 : renderExactGeometry.quaternions,
+        textureSize2
+      ),
       textureSize2.width,
       textureSize2.height,
       textureSize2.depth
@@ -8096,7 +8238,10 @@ function ensureUegsGpuResources(packedSplats) {
   });
   const directionalLightCount = new DynoInt({
     key: "uegsDirectionalLightCount",
-    value: Math.min(bundle.sceneLighting.directionalLights.length, MAX_DIRECTIONAL_LIGHTS)
+    value: Math.min(
+      bundle.sceneLighting.directionalLights.length,
+      MAX_DIRECTIONAL_LIGHTS
+    )
   });
   const localLightCount = new DynoInt({
     key: "uegsLocalLightCount",
@@ -15441,11 +15586,13 @@ export {
   isPcSogs,
   loadOptionalUegsBundleFromUrl,
   modifiers,
+  parseUegsComparisonViewpoint,
   parseUegsGaussianPayload,
   parseUegsManifest,
   parseUegsSceneLightingContract,
   pixelsToPngUrl,
   readRgbaArray,
+  scaleUegsComparisonViewpointToSceneBounds,
   setPackedSplat,
   setUegsAmbientOcclusionEnabled,
   setUegsBakedShadowEnabled,

@@ -87,6 +87,19 @@
     <label><input id="sky-light" type="checkbox" checked /> Enable sky lighting</label>
     <label><input id="ambient-occlusion" type="checkbox" checked /> Enable ambient occlusion</label>
     <label>
+      Presentation
+      <select id="presentation-profile">
+        <option value="spark-default">Spark Default</option>
+        <option value="ue-truth">UE Truth (Linear)</option>
+        <option value="ue-presentation">UE-Like Final</option>
+      </select>
+    </label>
+    <label>
+      Presentation exposure
+      <input id="presentation-exposure" type="range" min="0.25" max="2.5" step="0.05" value="1" />
+      <span id="presentation-exposure-value">1.00</span>
+    </label>
+    <label>
       Debug view
       <select id="debug-view">
         <option value="0">Final</option>
@@ -133,8 +146,10 @@
       getUegsSparkViewContract,
       inspectUegsRuntimeTelemetry,
       parseUegsGaussianPayload,
+      parseUegsComparisonViewpoint,
       parseUegsManifest,
       parseUegsSceneLightingContract,
+      scaleUegsComparisonViewpointToSceneBounds,
       setUegsAmbientOcclusionEnabled,
       setUegsBakedShadowEnabled,
       setUegsDebugViewMode,
@@ -158,6 +173,46 @@
       }
       return value.startsWith("#") ? value : `#${value}`;
     };
+    const normalizePresentationProfile = (value) => {
+      switch ((value ?? "").toLowerCase()) {
+        case "ue-truth":
+        case "truth":
+        case "linear":
+        case "linear-truth":
+          return "ue-truth";
+        case "ue-presentation":
+        case "ue":
+        case "ue-like":
+        case "presentation":
+          return "ue-presentation";
+        case "spark-default":
+        case "spark":
+        default:
+          return "spark-default";
+      }
+    };
+    const toneMappingName = (value) => {
+      switch (value) {
+        case THREE.NoToneMapping:
+          return "NoToneMapping";
+        case THREE.ACESFilmicToneMapping:
+          return "ACESFilmicToneMapping";
+        case THREE.LinearToneMapping:
+          return "LinearToneMapping";
+        case THREE.ReinhardToneMapping:
+          return "ReinhardToneMapping";
+        case THREE.CineonToneMapping:
+          return "CineonToneMapping";
+        case THREE.AgXToneMapping:
+          return "AgXToneMapping";
+        case THREE.NeutralToneMapping:
+          return "NeutralToneMapping";
+        case THREE.CustomToneMapping:
+          return "CustomToneMapping";
+        default:
+          return `Unknown(${value})`;
+      }
+    };
     const parseBooleanQuery = (...keys) => {
       for (const key of keys) {
         const value = params.get(key);
@@ -176,8 +231,20 @@
       (params.get("contract") ?? "uegs").toLowerCase() === "generic"
         ? "generic"
         : "uegs";
+    const presentationProfileRequested = normalizePresentationProfile(
+      params.get("presentation") ?? params.get("presentationProfile"),
+    );
+    const presentationExposureRequested =
+      parseOptionalNumber("presentationExposure") ??
+      parseOptionalNumber("exposure") ??
+      1.0;
+    const autoOverrideRequested = params.get("auto") != null;
     const splatURL = params.get("spz");
     const autoOrbitRequested = params.get("auto") !== "0";
+    const cameraModeRequested =
+      (params.get("camera") ?? params.get("cameraMode") ?? "manifest").toLowerCase() === "fit"
+        ? "fit"
+        : "manifest";
     const bakedShadowRequested = params.get("bakedShadow") !== "0";
     const directLightRequested = params.get("directLight") !== "0";
     const skyLightRequested = params.get("skyLight") !== "0";
@@ -234,6 +301,9 @@
     const directLightCheckbox = document.getElementById("direct-light");
     const skyLightCheckbox = document.getElementById("sky-light");
     const ambientOcclusionCheckbox = document.getElementById("ambient-occlusion");
+    const presentationProfileSelect = document.getElementById("presentation-profile");
+    const presentationExposureInput = document.getElementById("presentation-exposure");
+    const presentationExposureValue = document.getElementById("presentation-exposure-value");
     const debugViewSelect = document.getElementById("debug-view");
     const overlayEl = document.getElementById("overlay");
     const statusEl = document.getElementById("status");
@@ -256,7 +326,6 @@
 
     const formatErrorMessage = (error) =>
       error instanceof Error ? `${error.message}\n\n${error.stack ?? ""}` : String(error);
-
     let startupState = "bootstrapping";
     let startupSettled = false;
     let startupDiagnostics = {
@@ -427,6 +496,11 @@
       const size = bounds.getSize(new THREE.Vector3()).length();
       const orbitRadius = Math.max(size * 0.9, 130);
       const orbitHeight = Math.max(size * heightScale, 40);
+      const comparisonViewpoint = scaleUegsComparisonViewpointToSceneBounds(
+        parseUegsComparisonViewpoint(bundle.manifest),
+        bundle.manifest,
+        bounds,
+      );
       const applyExplicitCameraPose = () => {
         if (!explicitCameraRequested) {
           return false;
@@ -451,12 +525,45 @@
         }
         return true;
       };
+      const applyManifestComparisonViewpoint = () => {
+        if (explicitCameraRequested || !comparisonViewpoint) {
+          return false;
+        }
+        camera.position.set(
+          comparisonViewpoint.positionX,
+          comparisonViewpoint.positionY,
+          comparisonViewpoint.positionZ,
+        );
+        camera.quaternion.set(
+          comparisonViewpoint.quaternionX,
+          comparisonViewpoint.quaternionY,
+          comparisonViewpoint.quaternionZ,
+          comparisonViewpoint.quaternionW,
+        ).normalize();
+        if (
+          requestedFov === null &&
+          Number.isFinite(comparisonViewpoint.verticalFovDegrees)
+        ) {
+          camera.fov = comparisonViewpoint.verticalFovDegrees;
+          camera.updateProjectionMatrix();
+        }
+        if (!autoOverrideRequested) {
+          autoOrbitCheckbox.checked = false;
+        }
+        return true;
+      };
       let bakedShadowEnabled =
         summary.bakedGeometryShadowTransferExported && bakedShadowRequested;
       let directLightingEnabled = directLightRequested;
       let skyLightingEnabled = skyLightRequested;
       let ambientOcclusionEnabled = ambientOcclusionRequested;
       let debugViewMode = debugViewRequested;
+      let presentationProfile = presentationProfileRequested;
+      let presentationExposure = THREE.MathUtils.clamp(
+        presentationExposureRequested,
+        0.25,
+        2.5,
+      );
       let sortRadialEnabled =
         sortRadialRequested ??
         (renderContractRequested === "generic"
@@ -487,6 +594,59 @@
       sort32Checkbox.checked = sort32Enabled;
       stochasticCheckbox.checked = stochasticEnabled;
       surface2dCheckbox.checked = surface2dEnabled;
+      presentationProfileSelect.value = presentationProfile;
+      presentationExposureInput.value = presentationExposure.toFixed(2);
+      presentationExposureValue.textContent = presentationExposure.toFixed(2);
+
+      const debugViewIsPresentationSurface = (mode) =>
+        Number(mode) === 0 || Number(mode) === 17;
+
+      const resolveRendererPresentation = () => {
+        if (presentationProfile === "ue-presentation") {
+          const appliesToneMapping =
+            !summary.toneMappingApplied &&
+            debugViewIsPresentationSurface(debugViewMode);
+          return {
+            profile: presentationProfile,
+            toneMapping: appliesToneMapping
+              ? THREE.ACESFilmicToneMapping
+              : THREE.NoToneMapping,
+            toneMappingExposure: appliesToneMapping ? presentationExposure : 1.0,
+            appliesToneMapping,
+            reason: appliesToneMapping
+              ? "ue-like-final-presentation"
+              : summary.toneMappingApplied
+                ? "bundle-already-tone-mapped"
+                : "raw-or-term-view-remains-linear",
+          };
+        }
+        return {
+          profile: presentationProfile,
+          toneMapping: THREE.NoToneMapping,
+          toneMappingExposure: 1.0,
+          appliesToneMapping: false,
+          reason:
+            presentationProfile === "ue-truth"
+              ? "explicit-linear-truth"
+              : "spark-default-linear",
+        };
+      };
+
+      const applyRendererPresentation = ({ force = false } = {}) => {
+        const resolved = resolveRendererPresentation();
+        const changed =
+          force ||
+          renderer.outputColorSpace !== THREE.SRGBColorSpace ||
+          renderer.toneMapping !== resolved.toneMapping ||
+          renderer.toneMappingExposure !== resolved.toneMappingExposure;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        renderer.toneMapping = resolved.toneMapping;
+        renderer.toneMappingExposure = resolved.toneMappingExposure;
+        return {
+          changed,
+          resolved,
+        };
+      };
 
       const nextAnimationFrame = ({ timeoutMs = 100 } = {}) =>
         new Promise((resolve) => {
@@ -683,6 +843,33 @@
         return setUegsDebugViewMode(mesh, debugViewMode);
       };
 
+      const setPresentationProfileRuntime = (
+        profile,
+        { exposure = presentationExposure, force = false } = {},
+      ) => {
+        const normalizedProfile = normalizePresentationProfile(profile);
+        const clampedExposure = THREE.MathUtils.clamp(
+          Number(exposure) || 1.0,
+          0.25,
+          2.5,
+        );
+        const profileChanged = force || presentationProfile !== normalizedProfile;
+        const exposureChanged =
+          force ||
+          Math.abs(presentationExposure - clampedExposure) > 1e-6;
+        presentationProfile = normalizedProfile;
+        presentationExposure = clampedExposure;
+        presentationProfileSelect.value = presentationProfile;
+        presentationExposureInput.value = presentationExposure.toFixed(2);
+        presentationExposureValue.textContent = presentationExposure.toFixed(2);
+        const presentationResult = applyRendererPresentation({ force });
+        return {
+          changed:
+            profileChanged || exposureChanged || presentationResult.changed,
+          resolved: presentationResult.resolved,
+        };
+      };
+
       const applyRuntimeConfiguration = async (
         {
           bakedShadow = bakedShadowEnabled,
@@ -690,6 +877,8 @@
           skyLighting = skyLightingEnabled,
           ambientOcclusion = ambientOcclusionEnabled,
           debugViewMode: nextDebugViewMode = debugViewMode,
+          presentationProfile: nextPresentationProfile = presentationProfile,
+          presentationExposure: nextPresentationExposure = presentationExposure,
         } = {},
         { force = false, rebuild = true } = {},
       ) => {
@@ -738,14 +927,21 @@
           changed;
         changed =
           setDebugViewRuntimeMode(nextMode, { force }) || changed;
+        const presentationResult = setPresentationProfileRuntime(
+          nextPresentationProfile,
+          {
+            exposure: nextPresentationExposure,
+            force,
+          },
+        );
+        changed = presentationResult.changed || changed;
         if (!changed) {
           updateSummary();
           return getRenderTelemetry();
         }
-        if (!rebuild && !debugViewChanged) {
-          return await awaitUniformSync();
-        }
-        return await forceRuntimeRebuild();
+        const telemetry = await awaitUniformSync();
+        updateSummary();
+        return telemetry;
       };
 
       const applyBakedShadowEnabled = async (enabled, options = {}) =>
@@ -762,6 +958,18 @@
 
       const applyDebugViewMode = async (mode, options = {}) =>
         applyRuntimeConfiguration({ debugViewMode: mode }, options);
+
+      const applyPresentationProfile = async (
+        profile,
+        { exposure = presentationExposure, ...options } = {},
+      ) =>
+        applyRuntimeConfiguration(
+          {
+            presentationProfile: profile,
+            presentationExposure: exposure,
+          },
+          options,
+        );
 
       const applySortConfiguration = async ({
         sortRadial,
@@ -867,6 +1075,18 @@
                 recommendedRenderContract.maxPixelRadius
             : null,
         },
+        presentationContract: {
+          requestedProfile: presentationProfile,
+          requestedExposure: presentationExposure,
+          runtime: {
+            ...resolveRendererPresentation(),
+            toneMappingName: toneMappingName(renderer.toneMapping),
+            outputColorSpace:
+              renderer.outputColorSpace === THREE.SRGBColorSpace
+                ? "SRGBColorSpace"
+                : String(renderer.outputColorSpace),
+          },
+        },
         rendererContract: getRendererContract(),
         payloadTelemetry: {
           normalLength: summary.payloadTelemetry.normalLength,
@@ -936,12 +1156,29 @@
       ambientOcclusionCheckbox.addEventListener("change", () => {
         void applyAmbientOcclusionEnabled(ambientOcclusionCheckbox.checked).catch(fail);
       });
+      presentationProfileSelect.addEventListener("change", () => {
+        void applyPresentationProfile(presentationProfileSelect.value, {
+          exposure: presentationExposure,
+        }).catch(fail);
+      });
+      presentationExposureInput.addEventListener("input", () => {
+        const nextExposure = Number(presentationExposureInput.value) || 1;
+        presentationExposureValue.textContent = nextExposure.toFixed(2);
+      });
+      presentationExposureInput.addEventListener("change", () => {
+        void applyPresentationProfile(presentationProfile, {
+          exposure: Number(presentationExposureInput.value) || 1,
+        }).catch(fail);
+      });
       debugViewSelect.addEventListener("change", () => {
         void applyDebugViewMode(debugViewSelect.value).catch(fail);
       });
 
       const placeStaticCamera = () => {
         if (applyExplicitCameraPose()) {
+          return;
+        }
+        if (cameraModeRequested !== "fit" && applyManifestComparisonViewpoint()) {
           return;
         }
         camera.position.set(
@@ -1130,6 +1367,7 @@
       window.uegsDebug = {
         mesh,
         spark,
+        camera,
         bundle,
         summary,
         isReady: () => startupState !== "bootstrapping" && startupState !== "failed",
@@ -1142,6 +1380,7 @@
           startupDiagnostics,
         }),
         getRuntimeState,
+        comparisonViewpoint,
         getRenderTelemetry,
         capturePixelDigest,
         capturePixelPng,
@@ -1150,6 +1389,7 @@
         awaitRenderSync,
         awaitSortIdle,
         forceRuntimeRebuild,
+        placeStaticCamera,
         applySortConfiguration,
         applySurface2dEnabled,
         applyRuntimeConfiguration,
@@ -1158,7 +1398,15 @@
         applySkyLightingEnabled,
         applyAmbientOcclusionEnabled,
         applyDebugViewMode,
+        applyPresentationProfile,
+        fitLoadedBounds: () => {
+          autoOrbitCheckbox.checked = false;
+          placeStaticCamera();
+          renderCurrentFrame();
+        },
       };
+
+      applyRendererPresentation({ force: true });
 
       renderer.setAnimationLoop((time) => {
         renderCurrentFrame(time);
@@ -1197,26 +1445,47 @@
 
         try {
           setStartupState("applying-contract", "Applying UEGS render contract…");
-          await applySortConfiguration({
-            sortRadial: sortRadialEnabled,
-            sort32: sort32Enabled,
-            stochastic: stochasticEnabled,
-            force: true,
-          });
-          await applySurface2dEnabled(surface2dEnabled, { force: true });
-          await applyRuntimeConfiguration(
-            {
-              bakedShadow: bakedShadowEnabled,
-              directLighting: directLightingEnabled,
-              skyLighting: skyLightingEnabled,
-              ambientOcclusion: ambientOcclusionEnabled,
-              debugViewMode,
-            },
-            { force: true, rebuild: true },
-          );
+          try {
+            await applySortConfiguration({
+              sortRadial: sortRadialEnabled,
+              sort32: sort32Enabled,
+              stochastic: stochasticEnabled,
+              force: true,
+            });
+          } catch (error) {
+            degraded = true;
+            startupDiagnostics.contractError = formatErrorMessage(error);
+          }
+          try {
+            await applySurface2dEnabled(surface2dEnabled, { force: true });
+          } catch (error) {
+            degraded = true;
+            if (!startupDiagnostics.contractError) {
+              startupDiagnostics.contractError = formatErrorMessage(error);
+            }
+          }
+          try {
+            await applyRuntimeConfiguration(
+              {
+                bakedShadow: bakedShadowEnabled,
+                directLighting: directLightingEnabled,
+                skyLighting: skyLightingEnabled,
+                ambientOcclusion: ambientOcclusionEnabled,
+                debugViewMode,
+              },
+              { force: true, rebuild: true },
+            );
+          } catch (error) {
+            degraded = true;
+            if (!startupDiagnostics.contractError) {
+              startupDiagnostics.contractError = formatErrorMessage(error);
+            }
+          }
         } catch (error) {
           degraded = true;
-          startupDiagnostics.contractError = formatErrorMessage(error);
+          if (!startupDiagnostics.contractError) {
+            startupDiagnostics.contractError = formatErrorMessage(error);
+          }
         }
 
         if (!degraded) {

@@ -44,6 +44,32 @@ export declare enum UegsDebugViewMode {
 export type UegsManifest = {
     tool: string;
     status: string;
+    bounds?: {
+        origin_x_cm?: number;
+        origin_y_cm?: number;
+        origin_z_cm?: number;
+        extent_x_cm?: number;
+        extent_y_cm?: number;
+        extent_z_cm?: number;
+    };
+    comparison_viewpoint?: {
+        source?: string;
+        position_x_cm?: number;
+        position_y_cm?: number;
+        position_z_cm?: number;
+        rotation_pitch_degrees?: number;
+        rotation_yaw_degrees?: number;
+        rotation_roll_degrees?: number;
+        quaternion_x?: number;
+        quaternion_y?: number;
+        quaternion_z?: number;
+        quaternion_w?: number;
+        vertical_fov_degrees?: number;
+        viewport_width_px?: number;
+        viewport_height_px?: number;
+        inherited_from_viewport?: boolean;
+        spark_open_cv?: boolean;
+    };
     payload_contract?: {
         material_truth_source?: string;
         color_semantic?: string;
@@ -81,6 +107,18 @@ export type UegsManifest = {
         format?: string;
         gaussian_count?: number;
     };
+};
+export type UegsComparisonViewpoint = {
+    source?: string;
+    positionX: number;
+    positionY: number;
+    positionZ: number;
+    quaternionX: number;
+    quaternionY: number;
+    quaternionZ: number;
+    quaternionW: number;
+    verticalFovDegrees: number;
+    sparkOpenCv: boolean | null;
 };
 export type UegsDirectionalLight = {
     direction: THREE.Vector3;
@@ -234,6 +272,8 @@ type UegsRenderableExactSplatGeometry = {
     source: "payload" | "spz" | "hybrid";
 };
 export declare function parseUegsManifest(json: string | JsonRecord): UegsManifest;
+export declare function parseUegsComparisonViewpoint(manifest: UegsManifest | null | undefined): UegsComparisonViewpoint | null;
+export declare function scaleUegsComparisonViewpointToSceneBounds(comparisonViewpoint: UegsComparisonViewpoint | null | undefined, manifest: UegsManifest | null | undefined, sceneBounds: THREE.Box3 | null | undefined): UegsComparisonViewpoint | null;
 export declare function parseUegsSceneLightingContract(json: string | JsonRecord): UegsSceneLightingContract;
 export declare function parseUegsGaussianPayload(input: ArrayBuffer | Uint8Array): UegsGaussianPayload;
 export declare function summarizeUegsBundle(bundle: UegsBundle): {

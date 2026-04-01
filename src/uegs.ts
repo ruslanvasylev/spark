@@ -75,6 +75,32 @@ export enum UegsDebugViewMode {
 export type UegsManifest = {
   tool: string;
   status: string;
+  bounds?: {
+    origin_x_cm?: number;
+    origin_y_cm?: number;
+    origin_z_cm?: number;
+    extent_x_cm?: number;
+    extent_y_cm?: number;
+    extent_z_cm?: number;
+  };
+  comparison_viewpoint?: {
+    source?: string;
+    position_x_cm?: number;
+    position_y_cm?: number;
+    position_z_cm?: number;
+    rotation_pitch_degrees?: number;
+    rotation_yaw_degrees?: number;
+    rotation_roll_degrees?: number;
+    quaternion_x?: number;
+    quaternion_y?: number;
+    quaternion_z?: number;
+    quaternion_w?: number;
+    vertical_fov_degrees?: number;
+    viewport_width_px?: number;
+    viewport_height_px?: number;
+    inherited_from_viewport?: boolean;
+    spark_open_cv?: boolean;
+  };
   payload_contract?: {
     material_truth_source?: string;
     color_semantic?: string;
@@ -112,6 +138,19 @@ export type UegsManifest = {
     format?: string;
     gaussian_count?: number;
   };
+};
+
+export type UegsComparisonViewpoint = {
+  source?: string;
+  positionX: number;
+  positionY: number;
+  positionZ: number;
+  quaternionX: number;
+  quaternionY: number;
+  quaternionZ: number;
+  quaternionW: number;
+  verticalFovDegrees: number;
+  sparkOpenCv: boolean | null;
 };
 
 export type UegsDirectionalLight = {
@@ -555,6 +594,120 @@ export function parseUegsManifest(json: string | JsonRecord): UegsManifest {
     );
   }
   return root as UegsManifest;
+}
+
+export function parseUegsComparisonViewpoint(
+  manifest: UegsManifest | null | undefined,
+): UegsComparisonViewpoint | null {
+  const viewpoint = manifest?.comparison_viewpoint;
+  if (!viewpoint) {
+    return null;
+  }
+
+  const rawPosition = new THREE.Vector3(
+    Number(viewpoint.position_x_cm),
+    Number(viewpoint.position_y_cm),
+    Number(viewpoint.position_z_cm),
+  );
+  const rawQuaternion = new THREE.Quaternion(
+    Number(viewpoint.quaternion_x),
+    Number(viewpoint.quaternion_y),
+    Number(viewpoint.quaternion_z),
+    Number(viewpoint.quaternion_w),
+  );
+  const hasFinitePose =
+    Number.isFinite(rawPosition.x) &&
+    Number.isFinite(rawPosition.y) &&
+    Number.isFinite(rawPosition.z) &&
+    Number.isFinite(rawQuaternion.x) &&
+    Number.isFinite(rawQuaternion.y) &&
+    Number.isFinite(rawQuaternion.z) &&
+    Number.isFinite(rawQuaternion.w);
+  if (!hasFinitePose) {
+    return null;
+  }
+
+  const position = convertUegsPositionToSpzBasis(rawPosition);
+  const quaternion = convertUegsQuaternionToSpzBasis(rawQuaternion);
+  return {
+    source:
+      typeof viewpoint.source === "string" ? viewpoint.source : undefined,
+    positionX: position.x,
+    positionY: position.y,
+    positionZ: position.z,
+    quaternionX: quaternion.x,
+    quaternionY: quaternion.y,
+    quaternionZ: quaternion.z,
+    quaternionW: quaternion.w,
+    verticalFovDegrees: Number(viewpoint.vertical_fov_degrees),
+    sparkOpenCv:
+      viewpoint.spark_open_cv == null ? null : Boolean(viewpoint.spark_open_cv),
+  };
+}
+
+export function scaleUegsComparisonViewpointToSceneBounds(
+  comparisonViewpoint: UegsComparisonViewpoint | null | undefined,
+  manifest: UegsManifest | null | undefined,
+  sceneBounds: THREE.Box3 | null | undefined,
+): UegsComparisonViewpoint | null {
+  if (!comparisonViewpoint) {
+    return null;
+  }
+  const manifestBounds = manifest?.bounds;
+  if (!manifestBounds || !sceneBounds || sceneBounds.isEmpty()) {
+    return comparisonViewpoint;
+  }
+
+  const rawManifestOrigin = new THREE.Vector3(
+    Number(manifestBounds.origin_x_cm),
+    Number(manifestBounds.origin_y_cm),
+    Number(manifestBounds.origin_z_cm),
+  );
+  const rawManifestExtent = new THREE.Vector3(
+    Number(manifestBounds.extent_x_cm),
+    Number(manifestBounds.extent_y_cm),
+    Number(manifestBounds.extent_z_cm),
+  );
+  const hasFiniteBounds =
+    Number.isFinite(rawManifestOrigin.x) &&
+    Number.isFinite(rawManifestOrigin.y) &&
+    Number.isFinite(rawManifestOrigin.z) &&
+    Number.isFinite(rawManifestExtent.x) &&
+    Number.isFinite(rawManifestExtent.y) &&
+    Number.isFinite(rawManifestExtent.z);
+  if (!hasFiniteBounds) {
+    return comparisonViewpoint;
+  }
+
+  const manifestOrigin = convertUegsPositionToSpzBasis(rawManifestOrigin);
+  const manifestExtent = convertUegsExtentToSpzBasis(rawManifestExtent);
+  const sceneSize = sceneBounds.getSize(new THREE.Vector3());
+  const candidateRatios = [sceneSize.x, sceneSize.y, sceneSize.z]
+    .map((value, index) => {
+      const denominator = manifestExtent.getComponent(index);
+      return denominator > 1.0e-6 ? value / denominator : Number.NaN;
+    })
+    .filter((value) => Number.isFinite(value) && value > 1.0e-6);
+  if (candidateRatios.length === 0) {
+    return comparisonViewpoint;
+  }
+
+  const positionScale = Math.max(...candidateRatios);
+  const scaledPosition = new THREE.Vector3(
+    comparisonViewpoint.positionX,
+    comparisonViewpoint.positionY,
+    comparisonViewpoint.positionZ,
+  )
+    .sub(manifestOrigin)
+    .multiplyScalar(positionScale)
+    .add(manifestOrigin);
+
+  return {
+    ...comparisonViewpoint,
+    positionX: scaledPosition.x,
+    positionY: scaledPosition.y,
+    positionZ: scaledPosition.z,
+  };
 }
 
 export function parseUegsSceneLightingContract(
