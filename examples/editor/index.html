@@ -285,8 +285,18 @@
       "fov",
     ].some((key) => initialUrlParams.get(key) !== null);
 
-    async function loadUegsManifestForSpzUrl(url) {
+    async function loadUegsManifestForSpzUrl(url, explicitManifestUrl = null) {
       try {
+        if (explicitManifestUrl) {
+          const response = await fetch(new URL(explicitManifestUrl, window.location.href), {
+            mode: "cors",
+            cache: "default",
+          });
+          if (response.ok) {
+            return parseUegsManifest(await response.text());
+          }
+        }
+
         const assetUrl = new URL(url, window.location.href);
         if (!assetUrl.pathname.toLowerCase().endsWith(".spz")) {
           return null;
@@ -617,9 +627,10 @@
       const urlParams = new URLSearchParams(window.location.search);
       const openCvOverride = parseBooleanQuery(urlParams, "openCv", "opencv");
       const firstUrl = splatFiles.find((file) => typeof file === "string") ?? null;
+      const manifestOverrideUrl = urlParams.get("manifest");
       const comparisonManifest =
         !explicitCameraRequested && typeof firstUrl === "string"
-          ? await loadUegsManifestForSpzUrl(firstUrl)
+          ? await loadUegsManifestForSpzUrl(firstUrl, manifestOverrideUrl)
           : null;
       const comparisonViewpoint =
         !explicitCameraRequested ? parseUegsComparisonViewpoint(comparisonManifest) : null;
