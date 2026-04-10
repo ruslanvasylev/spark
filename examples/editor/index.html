@@ -263,6 +263,20 @@
       return null;
     }
 
+    function parseNumberQuery(urlParams, ...keys) {
+      for (const key of keys) {
+        const value = urlParams.get(key);
+        if (value === null) {
+          continue;
+        }
+        const parsed = Number.parseFloat(value);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+      return null;
+    }
+
     function normalizeColorQuery(value) {
       if (!value) {
         return null;
@@ -527,6 +541,11 @@
       const sortRadial = parseBooleanQuery(urlParams, "sortRadial");
       const sort32 = parseBooleanQuery(urlParams, "sort32");
       const stochastic = parseBooleanQuery(urlParams, "stochastic");
+      const opaqueShellCoverage = parseBooleanQuery(urlParams, "opaqueShellCoverage");
+      const premultipliedAlpha = parseBooleanQuery(urlParams, "premultipliedAlpha");
+      const preBlurAmount = parseNumberQuery(urlParams, "preBlurAmount");
+      const blurAmount = parseNumberQuery(urlParams, "blurAmount");
+      const minAlpha = parseNumberQuery(urlParams, "minAlpha");
 
       if (sortRadial !== null) {
         spark.defaultView.sortRadial = sortRadial;
@@ -536,6 +555,24 @@
       }
       if (stochastic !== null) {
         spark.defaultView.stochastic = stochastic;
+      }
+      if (opaqueShellCoverage !== null) {
+        spark.opaqueShellCoverage = opaqueShellCoverage;
+        if (spark.renderContractBaseline) {
+          spark.renderContractBaseline.opaqueShellCoverage = opaqueShellCoverage;
+        }
+      }
+      if (premultipliedAlpha !== null) {
+        spark.premultipliedAlpha = premultipliedAlpha;
+      }
+      if (preBlurAmount !== null) {
+        spark.preBlurAmount = preBlurAmount;
+      }
+      if (blurAmount !== null) {
+        spark.blurAmount = blurAmount;
+      }
+      if (minAlpha !== null) {
+        spark.minAlpha = minAlpha;
       }
     }
 
@@ -1116,8 +1153,10 @@
         sortRadial: spark.defaultView.sortRadial ?? null,
         sort32: spark.defaultView.sort32 ?? null,
         stochastic: spark.defaultView.stochastic ?? null,
+        opaqueShellCoverage: spark.opaqueShellCoverage ?? null,
         preBlurAmount: spark.preBlurAmount ?? null,
         blurAmount: spark.blurAmount ?? null,
+        minAlpha: spark.minAlpha ?? null,
         premultipliedAlpha: spark.premultipliedAlpha ?? null,
       },
       debugState: {
@@ -1246,7 +1285,7 @@
     debugFolder.add(spark, "minPixelRadius", 0, 16, 0.1).name("Min pixel radius").listen();
     debugFolder.add(spark, "maxPixelRadius", 1, 1024, 1).name("Max pixel radius").listen();
     debugFolder.add(spark, "minAlpha", 0, 1, 0.001).name("Min alpha").listen();
-
+    debugFolder.add(spark, "opaqueShellCoverage").name("Opaque shell coverage").listen();
     debugFolder.add(spark, "premultipliedAlpha").name("Premultiplied alpha").listen();
     debugFolder.add(spark.defaultView, "stochastic").name("Stochastic sort-free").listen().onChange(touch);
     applyViewpointFromQuery();
