@@ -77,7 +77,7 @@
     camera.position.set(0, 0, 1);
 
     const canvas = document.getElementById("canvas");
-    const renderer = new THREE.WebGLRenderer({ canvas });
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     const spark = new SparkRenderer({ renderer });
     scene.add(spark);
@@ -101,6 +101,7 @@
     const inputs = [];
     let currentComparisonViewpoint = null;
     let currentComparisonManifest = null;
+    let currentAppliedComparisonViewpoint = null;
 
     const grid = new SplatMesh({
       constructSplats: (splats) => constructGrid({
@@ -317,6 +318,7 @@
 
     function applyComparisonViewpointToCamera(comparisonViewpoint) {
       if (!comparisonViewpoint) {
+        currentAppliedComparisonViewpoint = null;
         return false;
       }
       camera.position.set(
@@ -332,11 +334,25 @@
       ).normalize();
       if (Number.isFinite(comparisonViewpoint.verticalFovDegrees)) {
         camera.fov = comparisonViewpoint.verticalFovDegrees;
-        camera.updateProjectionMatrix();
       }
+      const bounds = hasLoadedBounds ? getLoadedSplatBounds() : null;
       if (hasLoadedBounds) {
         orbitControls.target.copy(loadedBoundsCenter);
       }
+      if (!applyBoundsClipPlanes(bounds)) {
+        camera.updateProjectionMatrix();
+      }
+      currentAppliedComparisonViewpoint = {
+        positionX: comparisonViewpoint.positionX,
+        positionY: comparisonViewpoint.positionY,
+        positionZ: comparisonViewpoint.positionZ,
+        quaternionX: comparisonViewpoint.quaternionX,
+        quaternionY: comparisonViewpoint.quaternionY,
+        quaternionZ: comparisonViewpoint.quaternionZ,
+        quaternionW: comparisonViewpoint.quaternionW,
+        verticalFovDegrees: comparisonViewpoint.verticalFovDegrees,
+        sparkOpenCv: comparisonViewpoint.sparkOpenCv ?? null,
+      };
       return true;
     }
 
@@ -362,6 +378,23 @@
       return initialized ? bounds : null;
     }
 
+    function applyBoundsClipPlanes(bounds) {
+      if (!bounds || bounds.isEmpty()) {
+        return false;
+      }
+      const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+      const radius = Math.max(sphere.radius, 0.01);
+      const distance = Math.max(
+        radius / Math.sin(THREE.MathUtils.degToRad(camera.fov) * 0.5),
+        radius * 2.5,
+        0.25,
+      );
+      camera.near = Math.max(distance / 1000, 0.001);
+      camera.far = Math.max(distance * 1000, radius * 10, 1000);
+      camera.updateProjectionMatrix();
+      return true;
+    }
+
     function refreshLoadedBoundsCameraRig() {
       const bounds = getLoadedSplatBounds();
       if (!bounds || bounds.isEmpty()) {
@@ -382,6 +415,7 @@
     }
 
     function placeStaticCamera() {
+      currentAppliedComparisonViewpoint = null;
       const bounds = refreshLoadedBoundsCameraRig();
       if (bounds && hasLoadedBounds) {
         camera.position.set(
@@ -390,12 +424,14 @@
           loadedBoundsCenter.z + loadedBoundsRadius,
         );
         camera.lookAt(loadedBoundsCenter);
-        camera.updateProjectionMatrix();
+        applyBoundsClipPlanes(bounds);
         return true;
       }
       camera.position.set(0, 0, 1);
       camera.quaternion.set(0, 0, 0, 1);
       camera.fov = 75;
+      camera.near = 0.01;
+      camera.far = 1000;
       camera.updateProjectionMatrix();
       return false;
     }
@@ -410,6 +446,7 @@
       const z = urlParams.get('z');
 
       if (x !== null || y !== null || z !== null) {
+        currentAppliedComparisonViewpoint = null;
         camera.position.set(
           x !== null ? parseFloat(x) : camera.position.x,
           y !== null ? parseFloat(y) : camera.position.y,
@@ -424,6 +461,7 @@
       const qw = urlParams.get('qw');
 
       if (qx !== null || qy !== null || qz !== null || qw !== null) {
+        currentAppliedComparisonViewpoint = null;
         camera.quaternion.set(
           qx !== null ? parseFloat(qx) : camera.quaternion.x,
           qy !== null ? parseFloat(qy) : camera.quaternion.y,
@@ -434,6 +472,7 @@
 
       const fov = urlParams.get("fov");
       if (fov !== null) {
+        currentAppliedComparisonViewpoint = null;
         camera.fov = parseFloat(fov);
         camera.updateProjectionMatrix();
       }
@@ -1032,6 +1071,35 @@
     }
 
     const getEditorRuntimeState = () => ({
+      cameraContract: {
+        modeRequested: cameraModeRequested,
+        explicitCameraRequested,
+        currentComparisonViewpoint,
+        currentAppliedComparisonViewpoint,
+        runtime: {
+          position: camera.position.toArray(),
+          quaternion: camera.quaternion.toArray(),
+          fov: camera.fov,
+          near: camera.near,
+          far: camera.far,
+        },
+        loadedBounds: {
+          hasLoadedBounds,
+          center: loadedBoundsCenter.toArray(),
+          radius: loadedBoundsRadius,
+          height: loadedBoundsHeight,
+        },
+        viewport: {
+          width: renderer.domElement.width,
+          height: renderer.domElement.height,
+        },
+      },
+      meshContract: {
+        meshCount: frame.children.filter((child) => child instanceof SplatMesh).length,
+        maxSh: frame.children
+          .filter((child) => child instanceof SplatMesh)
+          .map((child) => child.maxSh ?? null),
+      },
       presentationContract: {
         requestedProfile: guiOptions.presentationProfile,
         requestedExposure: guiOptions.presentationExposure,
@@ -1082,6 +1150,7 @@
         orbitTarget: orbitControls.target.toArray(),
       }),
       getComparisonViewpoint: () => currentComparisonViewpoint,
+      getAppliedComparisonViewpoint: () => currentAppliedComparisonViewpoint,
       renderer,
       renderCurrentFrame,
       capturePixelDigest,

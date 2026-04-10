@@ -509,7 +509,8 @@ function basenameFromPath(path?: string): string | undefined {
   if (!path) {
     return undefined;
   }
-  const normalized = path.split("\\").join("/");
+  const withoutSuffix = path.split(/[?#]/, 1)[0];
+  const normalized = withoutSuffix.split("\\").join("/");
   const index = normalized.lastIndexOf("/");
   return index >= 0 ? normalized.slice(index + 1) : normalized;
 }
@@ -681,8 +682,10 @@ export function scaleUegsComparisonViewpointToSceneBounds(
 
   const manifestOrigin = convertUegsPositionToSpzBasis(rawManifestOrigin);
   const manifestExtent = convertUegsExtentToSpzBasis(rawManifestExtent);
-  const sceneSize = sceneBounds.getSize(new THREE.Vector3());
-  const candidateRatios = [sceneSize.x, sceneSize.y, sceneSize.z]
+  const sceneExtent = sceneBounds.getSize(new THREE.Vector3()).multiplyScalar(
+    0.5,
+  );
+  const candidateRatios = [sceneExtent.x, sceneExtent.y, sceneExtent.z]
     .map((value, index) => {
       const denominator = manifestExtent.getComponent(index);
       return denominator > 1.0e-6 ? value / denominator : Number.NaN;
@@ -1139,6 +1142,19 @@ export async function loadOptionalUegsBundleFromUrl(
   }
 
   const manifest = parseUegsManifest(await manifestResponse.text());
+  const appearanceEncoding = (
+    manifest.payload_contract?.appearance_encoding ?? ""
+  ).toLowerCase();
+  const declaresExplorableBundle =
+    appearanceEncoding === "explorable_scene_relight" ||
+    appearanceEncoding === "explorable_scene_relight_baked_shadows";
+  const declaresSidecarBundle =
+    manifest.gaussian_payload_sidecar != null ||
+    manifest.scene_lighting_contract != null;
+  if (!declaresExplorableBundle && !declaresSidecarBundle) {
+    return undefined;
+  }
+
   const payloadFileName =
     basenameFromPath(manifest.gaussian_payload_sidecar?.path) ??
     "uegs_gaussians_payload.bin";

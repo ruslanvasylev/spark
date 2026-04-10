@@ -541,6 +541,39 @@ assert.strictEqual(
   undefined,
 );
 
+const originalFetchForBakedManifest = globalThis.fetch;
+const fetchedBakedManifestUrls: string[] = [];
+try {
+  globalThis.fetch = async (input) => {
+    const url = typeof input === "string" ? input : input.url;
+    fetchedBakedManifestUrls.push(url);
+    if (url === "http://localhost/exports/uegs_manifest.json") {
+      return new Response(
+        JSON.stringify({
+          tool: "UEGS",
+          status: "gaussian_payload_export",
+          settings: { export_format: "Spz" },
+          payload_contract: {
+            appearance_encoding: "conservative_first_order_sh",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return new Response("missing", { status: 404 });
+  };
+
+  const loadedBakedManifestBundle = await loadOptionalUegsBundleFromUrl(
+    "/exports/uegs_gaussians.spz",
+  );
+  assert.strictEqual(loadedBakedManifestBundle, undefined);
+  assert.deepStrictEqual(fetchedBakedManifestUrls, [
+    "http://localhost/exports/uegs_manifest.json",
+  ]);
+} finally {
+  globalThis.fetch = originalFetchForBakedManifest;
+}
+
 const originalFetch = globalThis.fetch;
 try {
   globalThis.fetch = async (input) => {

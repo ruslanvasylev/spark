@@ -323,6 +323,7 @@
     }
 
     let updateSummary = () => {};
+    const STANDARD_SPZ_READY = Symbol("standard-spz-ready");
 
     const formatErrorMessage = (error) =>
       error instanceof Error ? `${error.message}\n\n${error.stack ?? ""}` : String(error);
@@ -402,14 +403,21 @@
       scene.add(mesh);
       await mesh.initialized;
 
+      const loadExplicitManifestOverride = async () => {
+        if (!manifestOverrideUrl) {
+          return null;
+        }
+        const response = await fetch(manifestOverrideUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to load manifest override: ${manifestOverrideUrl}`);
+        }
+        return parseUegsManifest(await response.text());
+      };
+
       const loadExplicitBundleOverride = async () => {
-        const overrideUrls = [
-          manifestOverrideUrl,
-          payloadOverrideUrl,
-          lightingOverrideUrl,
-        ];
-        const anyOverride = overrideUrls.some((value) => value != null);
-        if (!anyOverride) {
+        const hasBundleOverride =
+          payloadOverrideUrl != null || lightingOverrideUrl != null;
+        if (!hasBundleOverride) {
           return null;
         }
         if (!manifestOverrideUrl || !payloadOverrideUrl || !lightingOverrideUrl) {
@@ -446,6 +454,9 @@
       };
 
       const explicitBundle = await loadExplicitBundleOverride();
+      const explicitComparisonManifest = explicitBundle
+        ? explicitBundle.manifest
+        : await loadExplicitManifestOverride();
       if (explicitBundle) {
         attachUegsBundle(mesh.packedSplats, explicitBundle);
       }
@@ -456,15 +467,426 @@
       mesh.packedSplats.extra = extra;
       const bundle = extra.uegsBundle;
       if (!bundle) {
-        statusEl.textContent = "Loaded SPZ, but no UEGS bundle was attached.";
         bakedShadowCheckbox.disabled = true;
         directLightCheckbox.disabled = true;
         skyLightCheckbox.disabled = true;
         ambientOcclusionCheckbox.disabled = true;
         debugViewSelect.disabled = true;
         stochasticCheckbox.disabled = true;
-        throw new Error("UEGS bundle missing on loaded SPZ");
+        sortRadialCheckbox.disabled = true;
+        sort32Checkbox.disabled = true;
+        surface2dCheckbox.disabled = true;
+
+        const bounds = mesh.getBoundingBox(true);
+        const center = bounds.getCenter(new THREE.Vector3());
+        const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+        const radius = Math.max(sphere.radius, 0.01);
+        const distance = Math.max(
+          radius / Math.sin(THREE.MathUtils.degToRad(camera.fov) * 0.5),
+          radius * 2.5,
+          0.25,
+        );
+        const standardComparisonViewpoint =
+          cameraModeRequested !== "fit" && !explicitCameraRequested
+            ? scaleUegsComparisonViewpointToSceneBounds(
+                parseUegsComparisonViewpoint(explicitComparisonManifest),
+                explicitComparisonManifest,
+                bounds,
+              )
+            : null;
+        camera.near = Math.max(distance / 1000, 0.001);
+        camera.far = Math.max(distance * 1000, radius * 10, 1000);
+        const applyStandardCameraPose = () => {
+          if (explicitCameraRequested) {
+            camera.position.set(
+              explicitCameraPosition.x ?? camera.position.x,
+              explicitCameraPosition.y ?? camera.position.y,
+              explicitCameraPosition.z ?? camera.position.z,
+            );
+            if (
+              explicitCameraQuaternion.x !== null ||
+              explicitCameraQuaternion.y !== null ||
+              explicitCameraQuaternion.z !== null ||
+              explicitCameraQuaternion.w !== null
+            ) {
+              camera.quaternion.set(
+                explicitCameraQuaternion.x ?? camera.quaternion.x,
+                explicitCameraQuaternion.y ?? camera.quaternion.y,
+                explicitCameraQuaternion.z ?? camera.quaternion.z,
+                explicitCameraQuaternion.w ?? camera.quaternion.w,
+              ).normalize();
+            }
+          } else if (standardComparisonViewpoint) {
+            camera.position.set(
+              standardComparisonViewpoint.positionX,
+              standardComparisonViewpoint.positionY,
+              standardComparisonViewpoint.positionZ,
+            );
+            camera.quaternion.set(
+              standardComparisonViewpoint.quaternionX,
+              standardComparisonViewpoint.quaternionY,
+              standardComparisonViewpoint.quaternionZ,
+              standardComparisonViewpoint.quaternionW,
+            ).normalize();
+            if (Number.isFinite(standardComparisonViewpoint.verticalFovDegrees)) {
+              camera.fov = standardComparisonViewpoint.verticalFovDegrees;
+            }
+            if (!autoOverrideRequested) {
+              autoOrbitCheckbox.checked = false;
+            }
+          } else {
+            camera.position.set(center.x, center.y, center.z + distance * 1.15);
+            camera.lookAt(center);
+          }
+          camera.updateProjectionMatrix();
+        };
+        let presentationProfile = presentationProfileRequested;
+        let presentationExposure = THREE.MathUtils.clamp(
+          presentationExposureRequested,
+          0.25,
+          2.5,
+        );
+        spark.defaultView.sortRadial =
+          sortRadialRequested ?? (spark.defaultView.sortRadial ?? true);
+        spark.defaultView.sort32 =
+          sort32Requested ?? (spark.defaultView.sort32 ?? true);
+        spark.defaultView.stochastic =
+          stochasticRequested ?? (spark.defaultView.stochastic ?? false);
+        if (surface2dRequested !== null) {
+          spark.enable2DGS = surface2dRequested;
+        }
+
+        const resolveStandardRendererPresentation = () => {
+          if (presentationProfile === "ue-presentation") {
+            return {
+              profile: presentationProfile,
+              toneMapping: THREE.ACESFilmicToneMapping,
+              toneMappingExposure: presentationExposure,
+              appliesToneMapping: true,
+              reason: "ue-like-final-presentation",
+            };
+          }
+          return {
+            profile: presentationProfile,
+            toneMapping: THREE.NoToneMapping,
+            toneMappingExposure: 1.0,
+            appliesToneMapping: false,
+            reason:
+              presentationProfile === "ue-truth"
+                ? "explicit-linear-truth"
+                : "spark-default-linear",
+          };
+        };
+
+        const applyStandardRendererPresentation = ({ force = false } = {}) => {
+          const resolved = resolveStandardRendererPresentation();
+          const changed =
+            force ||
+            renderer.outputColorSpace !== THREE.SRGBColorSpace ||
+            renderer.toneMapping !== resolved.toneMapping ||
+            renderer.toneMappingExposure !== resolved.toneMappingExposure;
+          renderer.outputColorSpace = THREE.SRGBColorSpace;
+          renderer.toneMapping = resolved.toneMapping;
+          renderer.toneMappingExposure = resolved.toneMappingExposure;
+          return {
+            changed,
+            resolved,
+          };
+        };
+
+        const renderStandardFrame = (time = performance.now()) => {
+          if (autoOrbitCheckbox.checked && !explicitCameraRequested) {
+            const t = time * 0.00035;
+            camera.position.set(
+              center.x + Math.cos(t) * distance,
+              center.y,
+              center.z + Math.sin(t) * distance,
+            );
+            camera.lookAt(center);
+          } else {
+            controls.update(camera);
+          }
+          renderer.render(scene, camera);
+        };
+
+        const readStandardRenderedPixels = () => {
+          const width = renderer.domElement.width;
+          const height = renderer.domElement.height;
+          const target = new THREE.WebGLRenderTarget(width, height, {
+            format: THREE.RGBAFormat,
+            type: THREE.UnsignedByteType,
+          });
+          const pixels = new Uint8Array(width * height * 4);
+          const previousTarget = renderer.getRenderTarget();
+          renderer.setRenderTarget(target);
+          renderStandardFrame();
+          renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+          renderer.setRenderTarget(previousTarget);
+          target.dispose();
+          return { width, height, pixels };
+        };
+
+        const captureStandardPixelDigest = () => {
+          const { width, height, pixels } = readStandardRenderedPixels();
+          let hash = 2166136261 >>> 0;
+          let lumaSum = 0;
+          for (let i = 0; i < pixels.length; i += 4) {
+            const r = pixels[i];
+            const g = pixels[i + 1];
+            const b = pixels[i + 2];
+            const a = pixels[i + 3];
+            hash ^= r;
+            hash = Math.imul(hash, 16777619) >>> 0;
+            hash ^= g;
+            hash = Math.imul(hash, 16777619) >>> 0;
+            hash ^= b;
+            hash = Math.imul(hash, 16777619) >>> 0;
+            hash ^= a;
+            hash = Math.imul(hash, 16777619) >>> 0;
+            lumaSum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          }
+          const pixelCount = width * height;
+          return {
+            width,
+            height,
+            pixelCount,
+            hash32: hash >>> 0,
+            meanLuma: pixelCount > 0 ? lumaSum / pixelCount : 0,
+          };
+        };
+
+        const captureStandardPixelPng = () => {
+          const { width, height, pixels } = readStandardRenderedPixels();
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext("2d");
+          if (!context) {
+            throw new Error("2D canvas context unavailable for standard pixel capture");
+          }
+          const imageData = context.createImageData(width, height);
+          for (let row = 0; row < height; row += 1) {
+            const sourceOffset = row * width * 4;
+            const targetOffset = (height - row - 1) * width * 4;
+            imageData.data.set(
+              pixels.subarray(sourceOffset, sourceOffset + width * 4),
+              targetOffset,
+            );
+          }
+          context.putImageData(imageData, 0, 0);
+          return canvas.toDataURL("image/png");
+        };
+
+        const captureStandardCanvasPng = () => {
+          renderStandardFrame();
+          return renderer.domElement.toDataURL("image/png");
+        };
+
+        const captureStandardCanvasDigest = () => {
+          renderStandardFrame();
+          const sourceWidth = renderer.domElement.width;
+          const sourceHeight = renderer.domElement.height;
+          const maxDimension = 256;
+          const scale = Math.min(
+            1,
+            maxDimension / Math.max(sourceWidth, sourceHeight, 1),
+          );
+          const sampleWidth = Math.max(1, Math.round(sourceWidth * scale));
+          const sampleHeight = Math.max(1, Math.round(sourceHeight * scale));
+          const sampleCanvas = document.createElement("canvas");
+          sampleCanvas.width = sampleWidth;
+          sampleCanvas.height = sampleHeight;
+          const context = sampleCanvas.getContext("2d", {
+            willReadFrequently: true,
+          });
+          if (!context) {
+            throw new Error("2D canvas context unavailable for standard canvas digest");
+          }
+          context.drawImage(
+            renderer.domElement,
+            0,
+            0,
+            sourceWidth,
+            sourceHeight,
+            0,
+            0,
+            sampleWidth,
+            sampleHeight,
+          );
+          const pixels = context.getImageData(0, 0, sampleWidth, sampleHeight).data;
+          let hash = 2166136261 >>> 0;
+          let rgbSum = 0;
+          for (let i = 0; i < pixels.length; i += 4) {
+            hash ^= pixels[i];
+            hash = Math.imul(hash, 16777619) >>> 0;
+            hash ^= pixels[i + 1];
+            hash = Math.imul(hash, 16777619) >>> 0;
+            hash ^= pixels[i + 2];
+            hash = Math.imul(hash, 16777619) >>> 0;
+            rgbSum += pixels[i] + pixels[i + 1] + pixels[i + 2];
+          }
+          return {
+            width: sampleWidth,
+            height: sampleHeight,
+            hash32: hash >>> 0,
+            meanRgb: rgbSum / Math.max(1, sampleWidth * sampleHeight * 3),
+          };
+        };
+
+        const getStandardRendererContract = () => ({
+          isWebGL2: renderer.capabilities.isWebGL2,
+          maxTextures: renderer.capabilities.maxTextures,
+          maxVertexTextures: renderer.capabilities.maxVertexTextures,
+          maxTextureSize: renderer.capabilities.maxTextureSize,
+          maxCubemapSize: renderer.capabilities.maxCubemapSize,
+          maxTextureArrayLayers: renderer.capabilities.isWebGL2
+            ? gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS)
+            : null,
+          version: gl.getParameter(gl.VERSION),
+          shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+          renderer: gl.getParameter(gl.RENDERER),
+          vendor: gl.getParameter(gl.VENDOR),
+        });
+
+        const getStandardRuntimeState = () => ({
+          spz: splatURL,
+          mode: "standard-spz",
+          reason: "uegs-sidecar-bundle-absent",
+          manifestOverrideApplied: Boolean(explicitComparisonManifest),
+          standardComparisonViewpoint,
+          bounds: {
+            min: bounds.min.toArray(),
+            max: bounds.max.toArray(),
+            center: center.toArray(),
+            radius,
+          },
+          camera: {
+            position: camera.position.toArray(),
+            quaternion: camera.quaternion.toArray(),
+            fov: camera.fov,
+            near: camera.near,
+            far: camera.far,
+          },
+          presentationContract: {
+            requestedProfile: presentationProfile,
+            requestedExposure: presentationExposure,
+            runtime: {
+              ...resolveStandardRendererPresentation(),
+              toneMappingName: toneMappingName(renderer.toneMapping),
+              outputColorSpace:
+                renderer.outputColorSpace === THREE.SRGBColorSpace
+                  ? "SRGBColorSpace"
+                  : String(renderer.outputColorSpace),
+            },
+          },
+          renderContract: {
+            sortRadial: spark.defaultView.sortRadial ?? null,
+            sort32: spark.defaultView.sort32 ?? null,
+            stochastic: spark.defaultView.stochastic ?? null,
+            enable2DGS: spark.enable2DGS,
+            useUegsProjectedEllipse: spark.useUegsProjectedEllipse ?? null,
+            opaqueShellCoverage: spark.opaqueShellCoverage ?? null,
+            maxPixelRadius: spark.maxPixelRadius ?? null,
+          },
+          rendererContract: getStandardRendererContract(),
+        });
+
+        updateSummary = () => {
+          summaryEl.textContent = JSON.stringify(getStandardRuntimeState(), null, 2);
+        };
+
+        const applyStandardPresentationProfile = ({
+          profile = presentationProfile,
+          exposure = presentationExposure,
+          force = false,
+        } = {}) => {
+          presentationProfile = normalizePresentationProfile(profile);
+          presentationExposure = THREE.MathUtils.clamp(
+            Number(exposure) || 1.0,
+            0.25,
+            2.5,
+          );
+          presentationProfileSelect.value = presentationProfile;
+          presentationExposureInput.value = presentationExposure.toFixed(2);
+          presentationExposureValue.textContent = presentationExposure.toFixed(2);
+          const result = applyStandardRendererPresentation({ force });
+          updateSummary();
+          return result.resolved;
+        };
+
+        presentationProfileSelect.value = presentationProfile;
+        presentationExposureInput.value = presentationExposure.toFixed(2);
+        presentationExposureValue.textContent = presentationExposure.toFixed(2);
+        presentationProfileSelect.addEventListener("change", () => {
+          applyStandardPresentationProfile({
+            profile: presentationProfileSelect.value,
+          });
+        });
+        presentationExposureInput.addEventListener("input", () => {
+          const nextExposure = Number(presentationExposureInput.value) || 1;
+          presentationExposureValue.textContent = nextExposure.toFixed(2);
+        });
+        presentationExposureInput.addEventListener("change", () => {
+          applyStandardPresentationProfile({
+            profile: presentationProfile,
+            exposure: Number(presentationExposureInput.value) || 1,
+          });
+        });
+
+        applyStandardCameraPose();
+        applyStandardRendererPresentation({ force: true });
+        renderer.setAnimationLoop((time) => {
+          renderStandardFrame(time);
+        });
+        renderStandardFrame();
+        spark.update({
+          scene,
+          viewToWorld: spark.defaultView.viewToWorld,
+        });
+        startupSettled = true;
+        setStartupState(
+          "settled",
+          "Loaded standard SPZ. UEGS sidecar bundle is absent; term controls are disabled.",
+        );
+        updateSummary();
+        window.spark = spark;
+        window.uegsDebug = {
+          mesh,
+          spark,
+          camera,
+          bundle: null,
+          summary: getStandardRuntimeState(),
+          isReady: () => startupSettled && startupState !== "failed",
+          isInteractive: () => startupState !== "failed",
+          isSettled: () => startupSettled,
+          getStartupState: () => ({
+            startupState,
+            startupSettled,
+            startupDiagnostics,
+          }),
+          getRuntimeState: getStandardRuntimeState,
+          capturePixelDigest: captureStandardPixelDigest,
+          capturePixelPng: captureStandardPixelPng,
+          captureCanvasPng: captureStandardCanvasPng,
+          captureCanvasDigest: captureStandardCanvasDigest,
+          applyPresentationProfile: applyStandardPresentationProfile,
+          fitLoadedBounds: () => {
+            autoOrbitCheckbox.checked = false;
+            applyStandardCameraPose();
+            renderStandardFrame();
+            updateSummary();
+          },
+        };
+        throw STANDARD_SPZ_READY;
       }
+
+      const summary = summarizeUegsBundle(bundle);
+      let bakedShadowEnabled =
+        summary.bakedGeometryShadowTransferExported && bakedShadowRequested;
+      let directLightingEnabled = directLightRequested;
+      let skyLightingEnabled = skyLightRequested;
+      let ambientOcclusionEnabled = ambientOcclusionRequested;
+      let debugViewMode = debugViewRequested;
 
       extra.uegsRenderGeometryPreference = geometryPreferenceRequested;
       extra.uegsRequestedMaxSh = requestedMaxSh;
@@ -483,8 +905,13 @@
       extra.uegsAutoConfigured = false;
       mesh.uegsModifier = undefined;
       configureUegsBundleForMesh(mesh);
+      setUegsBakedShadowEnabled(mesh, bakedShadowEnabled);
+      setUegsDirectLightingEnabled(mesh, directLightingEnabled);
+      setUegsSkyLightingEnabled(mesh, skyLightingEnabled);
+      setUegsAmbientOcclusionEnabled(mesh, ambientOcclusionEnabled);
+      setUegsDebugViewMode(mesh, debugViewMode);
+      mesh.updateVersion();
 
-      const summary = summarizeUegsBundle(bundle);
       const recommendedViewContract = getUegsSparkViewContract(mesh);
       const recommendedRenderContract = getUegsSparkRenderContract(mesh);
       if (renderContractRequested === "generic") {
@@ -552,12 +979,6 @@
         }
         return true;
       };
-      let bakedShadowEnabled =
-        summary.bakedGeometryShadowTransferExported && bakedShadowRequested;
-      let directLightingEnabled = directLightRequested;
-      let skyLightingEnabled = skyLightRequested;
-      let ambientOcclusionEnabled = ambientOcclusionRequested;
-      let debugViewMode = debugViewRequested;
       let presentationProfile = presentationProfileRequested;
       let presentationExposure = THREE.MathUtils.clamp(
         presentationExposureRequested,
@@ -908,25 +1329,36 @@
           return { reloading: true, href: nextUrl.toString() };
         }
         let changed = false;
+        let rebuildRequired = false;
+        const markModifierChange = (didChange) => {
+          if (didChange) {
+            changed = true;
+            rebuildRequired = true;
+          }
+        };
         if (extra.uegsRequestedMaxSh !== requestedMaxShForMode) {
           extra.uegsRequestedMaxSh = requestedMaxShForMode;
           changed = true;
+          rebuildRequired = true;
         }
         if ((mesh.maxSh ?? 0) !== requestedMaxShForMode) {
           mesh.maxSh = requestedMaxShForMode;
           changed = true;
+          rebuildRequired = true;
         }
-        changed =
-          setBakedShadowRuntimeEnabled(bakedShadow, { force }) || changed;
-        changed =
-          setDirectLightingRuntimeEnabled(directLighting, { force }) || changed;
-        changed =
-          setSkyLightingRuntimeEnabled(skyLighting, { force }) || changed;
-        changed =
-          setAmbientOcclusionRuntimeEnabled(ambientOcclusion, { force }) ||
-          changed;
-        changed =
-          setDebugViewRuntimeMode(nextMode, { force }) || changed;
+        markModifierChange(
+          setBakedShadowRuntimeEnabled(bakedShadow, { force }),
+        );
+        markModifierChange(
+          setDirectLightingRuntimeEnabled(directLighting, { force }),
+        );
+        markModifierChange(
+          setSkyLightingRuntimeEnabled(skyLighting, { force }),
+        );
+        markModifierChange(
+          setAmbientOcclusionRuntimeEnabled(ambientOcclusion, { force }),
+        );
+        markModifierChange(setDebugViewRuntimeMode(nextMode, { force }));
         const presentationResult = setPresentationProfileRuntime(
           nextPresentationProfile,
           {
@@ -939,7 +1371,18 @@
           updateSummary();
           return getRenderTelemetry();
         }
-        const telemetry = await awaitUniformSync();
+        const telemetry =
+          rebuild && rebuildRequired
+            ? await (async () => {
+                const previousMeshVersion = mesh.version ?? -1;
+                mesh.updateVersion();
+                return await awaitRenderSync({
+                  minMeshVersion: previousMeshVersion + 1,
+                  stableFrames: 2,
+                  timeoutMs: 60000,
+                });
+              })()
+            : await awaitUniformSync();
         updateSummary();
         return telemetry;
       };
@@ -1370,7 +1813,7 @@
         camera,
         bundle,
         summary,
-        isReady: () => startupState !== "bootstrapping" && startupState !== "failed",
+        isReady: () => startupSettled && startupState !== "failed",
         isInteractive: () =>
           startupState !== "bootstrapping" && startupState !== "failed",
         isSettled: () => startupSettled,
@@ -1512,7 +1955,9 @@
 
       void finalizeStartup().catch(fail);
     } catch (error) {
-      fail(error);
+      if (error !== STANDARD_SPZ_READY) {
+        fail(error);
+      }
     }
   </script>
 </body>

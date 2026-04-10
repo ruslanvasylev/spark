@@ -7368,7 +7368,8 @@ function basenameFromPath(path) {
   if (!path) {
     return void 0;
   }
-  const normalized = path.split("\\").join("/");
+  const withoutSuffix = path.split(/[?#]/, 1)[0];
+  const normalized = withoutSuffix.split("\\").join("/");
   const index = normalized.lastIndexOf("/");
   return index >= 0 ? normalized.slice(index + 1) : normalized;
 }
@@ -7493,8 +7494,10 @@ function scaleUegsComparisonViewpointToSceneBounds(comparisonViewpoint, manifest
   }
   const manifestOrigin = convertUegsPositionToSpzBasis(rawManifestOrigin);
   const manifestExtent = convertUegsExtentToSpzBasis(rawManifestExtent);
-  const sceneSize = sceneBounds.getSize(new THREE__namespace.Vector3());
-  const candidateRatios = [sceneSize.x, sceneSize.y, sceneSize.z].map((value, index) => {
+  const sceneExtent = sceneBounds.getSize(new THREE__namespace.Vector3()).multiplyScalar(
+    0.5
+  );
+  const candidateRatios = [sceneExtent.x, sceneExtent.y, sceneExtent.z].map((value, index) => {
     const denominator = manifestExtent.getComponent(index);
     return denominator > 1e-6 ? value / denominator : Number.NaN;
   }).filter((value) => Number.isFinite(value) && value > 1e-6);
@@ -7877,7 +7880,7 @@ function summarizeUegsBundle(bundle) {
   };
 }
 async function loadOptionalUegsBundleFromUrl(spzUrl, requestInit = {}) {
-  var _a2, _b2;
+  var _a2, _b2, _c;
   const fileName = basenameFromPath(spzUrl);
   if (!(fileName == null ? void 0 : fileName.toLowerCase().endsWith(".spz"))) {
     return void 0;
@@ -7890,8 +7893,14 @@ async function loadOptionalUegsBundleFromUrl(spzUrl, requestInit = {}) {
     return void 0;
   }
   const manifest = parseUegsManifest(await manifestResponse.text());
-  const payloadFileName = basenameFromPath((_a2 = manifest.gaussian_payload_sidecar) == null ? void 0 : _a2.path) ?? "uegs_gaussians_payload.bin";
-  const sceneLightingFileName = basenameFromPath((_b2 = manifest.scene_lighting_contract) == null ? void 0 : _b2.path) ?? "uegs_scene_lighting.json";
+  const appearanceEncoding = (((_a2 = manifest.payload_contract) == null ? void 0 : _a2.appearance_encoding) ?? "").toLowerCase();
+  const declaresExplorableBundle = appearanceEncoding === "explorable_scene_relight" || appearanceEncoding === "explorable_scene_relight_baked_shadows";
+  const declaresSidecarBundle = manifest.gaussian_payload_sidecar != null || manifest.scene_lighting_contract != null;
+  if (!declaresExplorableBundle && !declaresSidecarBundle) {
+    return void 0;
+  }
+  const payloadFileName = basenameFromPath((_b2 = manifest.gaussian_payload_sidecar) == null ? void 0 : _b2.path) ?? "uegs_gaussians_payload.bin";
+  const sceneLightingFileName = basenameFromPath((_c = manifest.scene_lighting_contract) == null ? void 0 : _c.path) ?? "uegs_scene_lighting.json";
   const [payloadResponse, sceneLightingResponse] = await Promise.all([
     fetchMaybe(siblingUrl(spzUrl, payloadFileName), requestInit),
     fetchMaybe(siblingUrl(spzUrl, sceneLightingFileName), requestInit)

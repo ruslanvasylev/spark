@@ -11,7 +11,10 @@ function parseArgs(argv) {
     pageUrl: "",
     outputPng: "",
     summaryJson: "",
+    presentationProfile: "leave",
+    presentationExposure: null,
     windowSize: "1400,1000",
+    captureSource: "auto",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -46,6 +49,18 @@ function parseArgs(argv) {
         options.windowSize = next;
         index += 1;
         break;
+      case "--capture-source":
+        options.captureSource = next;
+        index += 1;
+        break;
+      case "--presentation-profile":
+        options.presentationProfile = next;
+        index += 1;
+        break;
+      case "--presentation-exposure":
+        options.presentationExposure = Number(next);
+        index += 1;
+        break;
       default:
         throw new Error(`Unknown argument: ${arg}`);
     }
@@ -56,6 +71,26 @@ function parseArgs(argv) {
   }
   if (!options.outputPng) {
     throw new Error("--output-png is required");
+  }
+  if (!["auto", "pixel", "canvas", "screenshot"].includes(options.captureSource)) {
+    throw new Error(
+      "--capture-source must be one of: auto, pixel, canvas, screenshot",
+    );
+  }
+  if (
+    !["leave", "spark-default", "ue-truth", "ue-presentation"].includes(
+      options.presentationProfile,
+    )
+  ) {
+    throw new Error(
+      "--presentation-profile must be one of: leave, spark-default, ue-truth, ue-presentation",
+    );
+  }
+  if (
+    options.presentationExposure != null &&
+    !Number.isFinite(options.presentationExposure)
+  ) {
+    throw new Error("--presentation-exposure must be a finite number");
   }
 
   return options;
@@ -79,6 +114,16 @@ async function withTimeout(promise, timeoutMs, label) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function parseWindowSize(windowSize) {
+  const [widthText, heightText] = String(windowSize).split(",", 2);
+  const width = Number.parseInt(widthText, 10);
+  const height = Number.parseInt(heightText, 10);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    throw new Error(`Invalid --window-size: ${windowSize}`);
+  }
+  return { width, height };
 }
 
 async function pollJson(url, predicate, timeoutMs) {
@@ -188,6 +233,7 @@ async function waitForEditorReady(cdp, timeoutMs) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  const viewport = parseWindowSize(options.windowSize);
   const userDataDir = await mkdtemp(
     path.join(tmpdir(), "spark-editor-browser-"),
   );
@@ -261,8 +307,53 @@ async function main() {
 
     await cdpSend("Runtime.enable", {}, "Runtime.enable");
     await cdpSend("Page.enable", {}, "Page.enable");
+    await cdpSend(
+      "Emulation.setDeviceMetricsOverride",
+      {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor: 1,
+        mobile: false,
+        screenWidth: viewport.width,
+        screenHeight: viewport.height,
+      },
+      "Emulation.setDeviceMetricsOverride",
+    );
+    await cdpSend(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+          window.dispatchEvent(new Event("resize"));
+          return true;
+        })()`,
+        returnByValue: true,
+      },
+      "dispatch resize",
+    );
 
     const readyState = await waitForEditorReady(cdp, options.timeoutMs);
+
+    if (options.presentationProfile !== "leave") {
+      await cdpSend(
+        "Runtime.evaluate",
+        {
+          expression: `(async () => {
+            await window.editorDebug?.applyPresentationProfile?.({
+              profile: ${JSON.stringify(options.presentationProfile)},
+              exposure: ${
+                options.presentationExposure == null
+                  ? "undefined"
+                  : JSON.stringify(options.presentationExposure)
+              },
+            });
+            return window.editorDebug?.getRuntimeState?.() ?? null;
+          })()`,
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        "apply editor presentation profile",
+      );
+    }
 
     await cdpSend(
       "Runtime.evaluate",
@@ -288,8 +379,63 @@ async function main() {
             throw new Error("Editor canvas not found");
           }
           const meshes = window.editorDebug?.getMeshes?.() ?? [];
+          const pixelPng = window.editorDebug?.capturePixelPng?.() ?? null;
+          const pixelDigest = window.editorDebug?.capturePixelDigest?.() ?? null;
+          const canvasPng = window.editorDebug?.captureCanvasPng?.() ?? null;
+          let canvasDigest = window.editorDebug?.captureCanvasDigest?.() ?? null;
+          if (canvasDigest == null) {
+          const sampleCanvas = document.createElement("canvas");
+          const maxDimension = 256;
+          const scale = Math.min(
+            1,
+            maxDimension / Math.max(canvas.width, canvas.height, 1),
+          );
+          const sampleWidth = Math.max(1, Math.round(canvas.width * scale));
+          const sampleHeight = Math.max(1, Math.round(canvas.height * scale));
+          sampleCanvas.width = sampleWidth;
+          sampleCanvas.height = sampleHeight;
+          const sampleContext = sampleCanvas.getContext("2d", {
+            willReadFrequently: true,
+          });
+          if (sampleContext) {
+            sampleContext.drawImage(canvas, 0, 0, sampleWidth, sampleHeight);
+            const { data } = sampleContext.getImageData(
+              0,
+              0,
+              sampleWidth,
+              sampleHeight,
+            );
+            let hash = 2166136261 >>> 0;
+            let lumaSum = 0;
+            for (let i = 0; i < data.length; i += 4) {
+              const r = data[i];
+              const g = data[i + 1];
+              const b = data[i + 2];
+              hash ^= r;
+              hash = Math.imul(hash, 16777619) >>> 0;
+              hash ^= g;
+              hash = Math.imul(hash, 16777619) >>> 0;
+              hash ^= b;
+              hash = Math.imul(hash, 16777619) >>> 0;
+              lumaSum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            }
+            const pixelCount = sampleWidth * sampleHeight;
+            canvasDigest = {
+              sourceWidth: canvas.width,
+              sourceHeight: canvas.height,
+              sampleWidth,
+              sampleHeight,
+              pixelCount,
+              hash32: hash >>> 0,
+              meanLuma: pixelCount > 0 ? lumaSum / pixelCount : 0,
+            };
+          }
+          }
           return {
-            digest: window.editorDebug?.capturePixelDigest?.() ?? null,
+            pixelDigest,
+            pixelPng,
+            canvasPng,
+            canvasDigest,
             canvas: {
               width: canvas.width,
               height: canvas.height,
@@ -308,6 +454,8 @@ async function main() {
               sortRadial: window.spark?.defaultView?.sortRadial ?? null,
               sort32: window.spark?.defaultView?.sort32 ?? null,
               stochastic: window.spark?.defaultView?.stochastic ?? null,
+              presentationState:
+                window.editorDebug?.getRuntimeState?.()?.presentationContract ?? null,
             },
           };
         })()`,
@@ -317,27 +465,60 @@ async function main() {
     );
 
     const value = captureResult.result?.value ?? null;
-    const pngCapture = await cdpSend(
-      "Runtime.evaluate",
+    const screenshotResult = await cdpSend(
+      "Page.captureScreenshot",
       {
-        expression: "(() => window.editorDebug?.capturePixelPng?.() ?? null)()",
-        returnByValue: true,
+        format: "png",
+        fromSurface: true,
+        captureBeyondViewport: false,
       },
-      "capture editor canvas",
+      "capture editor screenshot",
     );
-    const pngDataUrl = pngCapture.result?.value ?? null;
-    if (!pngDataUrl?.startsWith("data:image/png;base64,")) {
-      throw new Error("Editor pixel capture did not return a PNG data URL");
+    const screenshotBase64 = screenshotResult.data ?? null;
+    const screenshotBuffer = screenshotBase64
+      ? Buffer.from(screenshotBase64, "base64")
+      : null;
+    const pixelDigest = value?.pixelDigest ?? null;
+    const canvasDigest = value?.canvasDigest ?? null;
+    const useCanvasCapture = options.captureSource === "canvas";
+    const useScreenshotCapture =
+      options.captureSource === "screenshot" || options.captureSource === "auto";
+
+    if (useScreenshotCapture) {
+      if (!screenshotBuffer) {
+        throw new Error("Editor screenshot capture did not return PNG data");
+      }
+      await writeFile(options.outputPng, screenshotBuffer);
+    } else {
+      const pngDataUrl = useCanvasCapture
+        ? (value?.canvasPng ?? null)
+        : (value?.pixelPng ?? null);
+      if (!pngDataUrl?.startsWith("data:image/png;base64,")) {
+        throw new Error(
+          useCanvasCapture
+            ? "Editor canvas capture did not return a PNG data URL"
+            : "Editor pixel capture did not return a PNG data URL",
+        );
+      }
+      await writeFile(
+        options.outputPng,
+        Buffer.from(pngDataUrl.slice("data:image/png;base64,".length), "base64"),
+      );
     }
-    await writeFile(
-      options.outputPng,
-      Buffer.from(pngDataUrl.slice("data:image/png;base64,".length), "base64"),
-    );
 
     const artifact = {
       pageUrl: options.pageUrl,
       readyState,
-      digest: value.digest,
+      digest: pixelDigest,
+      captureDigests: {
+        pixelDigest,
+        canvasDigest,
+      },
+      captureSource: useScreenshotCapture
+        ? "screenshot"
+        : useCanvasCapture
+          ? "canvas"
+          : "pixel",
       canvas: value.canvas,
       camera: value.camera,
       runtime: value.runtime,
