@@ -105,6 +105,12 @@
         <option value="0">Final</option>
         <option value="1">Base Color</option>
         <option value="18">Serialized Color</option>
+        <option value="19">UE Captured Scene Color</option>
+        <option value="20">UE Captured Base Color</option>
+        <option value="21">UE Captured Target Normal</option>
+        <option value="22">UE Captured Scene Normal</option>
+        <option value="23">UE Captured Direct Shadowed</option>
+        <option value="24">UE Captured Direct Unshadowed</option>
         <option value="2">Normal</option>
         <option value="8">Raw Normal</option>
         <option value="3">Direct Lighting</option>
@@ -145,6 +151,7 @@
       getUegsSparkRenderContract,
       getUegsSparkViewContract,
       inspectUegsRuntimeTelemetry,
+      parseUegsDebugCaptureSidecar,
       parseUegsGaussianPayload,
       parseUegsComparisonViewpoint,
       parseUegsManifest,
@@ -190,6 +197,21 @@
         default:
           return "spark-default";
       }
+    };
+    const basenameFromPath = (value) => {
+      if (!value) {
+        return null;
+      }
+      const withoutSuffix = value.split(/[?#]/, 1)[0];
+      const normalized = withoutSuffix.split("\\").join("/");
+      const index = normalized.lastIndexOf("/");
+      return index >= 0 ? normalized.slice(index + 1) : normalized;
+    };
+    const siblingUrl = (sourceUrl, fileName) => {
+      if (!sourceUrl || !fileName) {
+        return null;
+      }
+      return new URL(fileName, new URL(sourceUrl, window.location.href)).toString();
     };
     const toneMappingName = (value) => {
       switch (value) {
@@ -296,6 +318,8 @@
     const payloadOverrideUrl = params.get("payload");
     const lightingOverrideUrl =
       params.get("lighting") ?? params.get("sceneLighting");
+    const debugCaptureOverrideUrl =
+      params.get("debugCapture") ?? params.get("capturedDebug");
     const autoOrbitCheckbox = document.getElementById("auto-orbit");
     const bakedShadowCheckbox = document.getElementById("baked-shadow");
     const directLightCheckbox = document.getElementById("direct-light");
@@ -446,10 +470,30 @@
           payloadResponse.arrayBuffer(),
           lightingResponse.text(),
         ]);
+        const manifest = parseUegsManifest(manifestText);
+        const debugCaptureUrl =
+          debugCaptureOverrideUrl ??
+          siblingUrl(
+            payloadOverrideUrl ?? manifestOverrideUrl,
+            basenameFromPath(manifest.gaussian_debug_capture_sidecar?.path),
+          );
+        const debugCaptureResponse = debugCaptureUrl
+          ? await fetch(debugCaptureUrl)
+          : null;
+        if (debugCaptureUrl && debugCaptureResponse && !debugCaptureResponse.ok) {
+          throw new Error(`Failed to load debug capture override: ${debugCaptureUrl}`);
+        }
+        const debugCaptureBytes =
+          debugCaptureResponse && debugCaptureResponse.ok
+            ? await debugCaptureResponse.arrayBuffer()
+            : null;
         return {
-          manifest: parseUegsManifest(manifestText),
+          manifest,
           payload: parseUegsGaussianPayload(payloadBytes),
           sceneLighting: parseUegsSceneLightingContract(lightingText),
+          debugCapture: debugCaptureBytes
+            ? parseUegsDebugCaptureSidecar(debugCaptureBytes)
+            : undefined,
         };
       };
 
@@ -1020,7 +1064,7 @@
       presentationExposureValue.textContent = presentationExposure.toFixed(2);
 
       const debugViewIsPresentationSurface = (mode) =>
-        Number(mode) === 0 || Number(mode) === 17;
+        Number(mode) === 0 || Number(mode) === 17 || Number(mode) === 19;
 
       const resolveRendererPresentation = () => {
         if (presentationProfile === "ue-presentation") {

@@ -24,6 +24,12 @@ export declare enum UegsDebugViewMode {
     Final = 0,
     BaseColor = 1,
     SerializedColor = 18,
+    CapturedSceneColor = 19,
+    CapturedTargetBaseColor = 20,
+    CapturedTargetNormal = 21,
+    CapturedSceneNormal = 22,
+    CapturedDirectShadowed = 23,
+    CapturedDirectUnshadowed = 24,
     Normal = 2,
     RawNormal = 8,
     DirectLighting = 3,
@@ -101,6 +107,24 @@ export type UegsManifest = {
         preserves_roughness?: boolean;
         preserves_baked_shadow?: boolean;
         gaussian_count?: number;
+    };
+    gaussian_debug_capture_sidecar?: {
+        path?: string;
+        schema?: string;
+        role?: string;
+        gaussian_count?: number;
+        preserves_scene_color?: boolean;
+        preserves_target_base_color?: boolean;
+        preserves_target_normal?: boolean;
+        preserves_scene_normal?: boolean;
+        preserves_direct_shadowed_color?: boolean;
+        preserves_direct_unshadowed_color?: boolean;
+        scene_color_count?: number;
+        target_base_color_count?: number;
+        target_normal_count?: number;
+        scene_normal_count?: number;
+        direct_shadowed_color_count?: number;
+        direct_unshadowed_color_count?: number;
     };
     gaussian_seed_artifact?: {
         path?: string;
@@ -214,10 +238,36 @@ export type UegsGaussianPayload = {
     exactGeometry: UegsRenderableExactSplatGeometry;
     telemetry: UegsPayloadTelemetry;
 };
+export type UegsDebugCaptureTelemetry = {
+    recordCount: number;
+    sceneColorCount: number;
+    targetBaseColorCount: number;
+    targetNormalCount: number;
+    sceneNormalCount: number;
+    directShadowedCount: number;
+    directUnshadowedCount: number;
+};
+export type UegsDebugCaptureSidecar = {
+    recordCount: number;
+    textureSize: {
+        width: number;
+        height: number;
+        depth: number;
+        maxSplats: number;
+    };
+    sceneColor: Float32Array;
+    targetBaseColor: Float32Array;
+    targetNormal: Float32Array;
+    sceneNormal: Float32Array;
+    directShadowed: Float32Array;
+    directUnshadowed: Float32Array;
+    telemetry: UegsDebugCaptureTelemetry;
+};
 export type UegsBundle = {
     manifest: UegsManifest;
     payload: UegsGaussianPayload;
     sceneLighting: UegsSceneLightingContract;
+    debugCapture?: UegsDebugCaptureSidecar;
 };
 export type UegsRuntimeTelemetry = {
     hasBundle: boolean;
@@ -276,6 +326,7 @@ export declare function parseUegsComparisonViewpoint(manifest: UegsManifest | nu
 export declare function scaleUegsComparisonViewpointToSceneBounds(comparisonViewpoint: UegsComparisonViewpoint | null | undefined, manifest: UegsManifest | null | undefined, sceneBounds: THREE.Box3 | null | undefined): UegsComparisonViewpoint | null;
 export declare function parseUegsSceneLightingContract(json: string | JsonRecord): UegsSceneLightingContract;
 export declare function parseUegsGaussianPayload(input: ArrayBuffer | Uint8Array): UegsGaussianPayload;
+export declare function parseUegsDebugCaptureSidecar(input: ArrayBuffer | Uint8Array): UegsDebugCaptureSidecar;
 export declare function summarizeUegsBundle(bundle: UegsBundle): {
     appearanceEncoding: UegsPayloadAppearanceEncoding;
     recordCount: number;
@@ -288,6 +339,7 @@ export declare function summarizeUegsBundle(bundle: UegsBundle): {
     geometryContactShadowApproximationExpected: boolean;
     skyRadiance: THREE.Vector3;
     payloadTelemetry: UegsPayloadTelemetry;
+    debugCaptureTelemetry: UegsDebugCaptureTelemetry | null;
 };
 export declare function loadOptionalUegsBundleFromUrl(spzUrl: string, requestInit?: RequestInit): Promise<UegsBundle | undefined>;
 export declare function attachUegsBundle(packedSplats: PackedSplats, bundle: UegsBundle): void;

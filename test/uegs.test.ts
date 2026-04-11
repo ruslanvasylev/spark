@@ -14,6 +14,7 @@ import {
   getUegsSparkViewContract,
   inspectUegsRuntimeTelemetry,
   loadOptionalUegsBundleFromUrl,
+  parseUegsDebugCaptureSidecar,
   parseUegsGaussianPayload,
   parseUegsManifest,
   parseUegsSceneLightingContract,
@@ -174,6 +175,56 @@ function buildSceneLightingFixture(
   );
 }
 
+function buildDebugCaptureFixture() {
+  const bytes = new ArrayBuffer(32 + 104);
+  const view = new DataView(bytes);
+  let offset = 0;
+
+  const writeFloat = (value: number) => {
+    view.setFloat32(offset, value, true);
+    offset += 4;
+  };
+  const writeVec4 = (x: number, y: number, z: number, w: number) => {
+    writeFloat(x);
+    writeFloat(y);
+    writeFloat(z);
+    writeFloat(w);
+  };
+
+  view.setUint32(offset, 0x55454744, true);
+  offset += 4;
+  view.setUint32(offset, 1, true);
+  offset += 4;
+  view.setUint32(offset, 1, true);
+  offset += 4;
+  view.setUint32(offset, 32, true);
+  offset += 4;
+  view.setUint32(offset, 104, true);
+  offset += 4;
+  view.setUint32(offset, 0x3f, true);
+  offset += 4;
+  view.setUint32(offset, 0, true);
+  offset += 4;
+  view.setUint32(offset, 0, true);
+  offset += 4;
+
+  writeVec4(0.8, 0.7, 0.6, 1.0); // scene color
+  writeVec4(0.4, 0.5, 0.6, 1.0); // target base color
+  writeVec4(0.2, 0.4, 0.6, 1.0); // target normal
+  writeVec4(0.1, 0.3, 0.5, 1.0); // scene normal
+  writeVec4(0.25, 0.35, 0.45, 1.0); // direct shadowed
+  writeVec4(0.65, 0.75, 0.85, 1.0); // direct unshadowed
+  view.setUint32(offset, 0x3f, true);
+  offset += 4;
+  view.setUint8(offset, 1);
+  offset += 1;
+  view.setUint8(offset, 1);
+  offset += 1;
+  view.setUint16(offset, 0, true);
+
+  return new Uint8Array(bytes);
+}
+
 function buildBundleFixture(version: 5 | 6) {
   return {
     manifest: parseUegsManifest(
@@ -187,10 +238,16 @@ function buildBundleFixture(version: 5 | 6) {
               ? "explorable_scene_relight_baked_shadows"
               : "explorable_scene_relight",
         },
+        gaussian_debug_capture_sidecar: {
+          path: "uegs_captured_debug_passes.bin",
+          schema: "uegs_captured_debug_passes_v1",
+          scene_color_count: 1,
+        },
       }),
     ),
     payload: parseUegsGaussianPayload(buildPayloadFixture(version)),
     sceneLighting: buildSceneLightingFixture(version === 6),
+    debugCapture: parseUegsDebugCaptureSidecar(buildDebugCaptureFixture()),
   };
 }
 
@@ -397,6 +454,17 @@ approx(sceneLighting.localLights[0].direction.x, 0);
 approx(sceneLighting.localLights[0].direction.y, 0);
 approx(sceneLighting.localLights[0].direction.z, -1);
 
+const debugCapture = parseUegsDebugCaptureSidecar(buildDebugCaptureFixture());
+assert.strictEqual(debugCapture.recordCount, 1);
+approx(debugCapture.sceneColor[0], 0.8);
+approx(debugCapture.targetBaseColor[1], 0.5);
+approx(debugCapture.targetNormal[2], 0.6);
+approx(debugCapture.sceneNormal[0], 0.1);
+approx(debugCapture.directShadowed[0], 0.25);
+approx(debugCapture.directUnshadowed[2], 0.85);
+assert.strictEqual(debugCapture.telemetry.sceneColorCount, 1);
+assert.strictEqual(debugCapture.telemetry.directShadowedCount, 1);
+
 const bakedMesh = buildFakeMesh(buildBundleFixture(6));
 const bakedSplatMesh = asSplatMesh(bakedMesh);
 assert.strictEqual(configureUegsBundleForMesh(bakedSplatMesh), true);
@@ -421,6 +489,9 @@ approx(bakedResources.exactQuaternionTexture.value.image.data[0], 0.5);
 approx(bakedResources.exactQuaternionTexture.value.image.data[1], 0.5);
 approx(bakedResources.exactQuaternionTexture.value.image.data[2], 0.5);
 approx(bakedResources.exactQuaternionTexture.value.image.data[3], 0.5);
+approx(bakedResources.capturedSceneColorTexture.value.image.data[0], 0.8);
+approx(bakedResources.capturedTargetBaseColorTexture.value.image.data[1], 0.5);
+approx(bakedResources.capturedDirectShadowedTexture.value.image.data[2], 0.45);
 assert.strictEqual(setUegsBakedShadowEnabled(bakedSplatMesh, false), true);
 assert.strictEqual(setUegsDirectLightingEnabled(bakedSplatMesh, false), true);
 assert.strictEqual(setUegsSkyLightingEnabled(bakedSplatMesh, false), true);
@@ -587,6 +658,10 @@ try {
           payload_contract: {
             appearance_encoding: "explorable_scene_relight_baked_shadows",
           },
+          gaussian_debug_capture_sidecar: {
+            path: "uegs_captured_debug_passes.bin",
+            schema: "uegs_captured_debug_passes_v1",
+          },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
@@ -615,6 +690,12 @@ try {
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
+    if (url === "http://localhost/exports/uegs_captured_debug_passes.bin") {
+      return new Response(buildDebugCaptureFixture(), {
+        status: 200,
+        headers: { "Content-Type": "application/octet-stream" },
+      });
+    }
     return new Response("missing", { status: 404 });
   };
 
@@ -626,6 +707,7 @@ try {
     loadedBundle?.payload.header.appearanceEncoding,
     UegsPayloadAppearanceEncoding.ExplorableSceneRelightBakedShadows,
   );
+  approx(loadedBundle?.debugCapture?.sceneColor[0] ?? 0, 0.8);
 } finally {
   globalThis.fetch = originalFetch;
 }
