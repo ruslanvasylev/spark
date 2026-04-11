@@ -1862,6 +1862,9 @@ function makeUegsModifier(mesh: SplatMesh): GsplatModifier | undefined {
   const usePayloadOpacity = renderContract?.usePayloadOpacity ?? true;
   const useSerializedBaseColorForBaseView =
     renderContract?.useSerializedBaseColorForBaseView ?? false;
+  const useSerializedSceneAppearanceForFinalView =
+    bundle.payload.header.colorSemantic ===
+    UegsPayloadColorSemantic.BakedSceneAppearanceLinear;
 
   return dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
     if (!gsplat) {
@@ -2103,7 +2106,11 @@ function makeUegsModifier(mesh: SplatMesh): GsplatModifier | undefined {
                 ? uegsDirectContributionShadowed
                 : uegsDirectContribution;
             }
-            vec3 uegsFinalRgb = uegsEmissiveAmbientOcclusion.rgb + uegsAmbient + uegsDirectLighting;
+            vec3 uegsFinalRgb = ${
+              useSerializedSceneAppearanceForFinalView
+                ? "uegsSerializedBaseColor"
+                : "uegsEmissiveAmbientOcclusion.rgb + uegsAmbient + uegsDirectLighting"
+            };
             vec3 uegsDebugRgb = uegsFinalRgb;
             switch (${inputs.debugViewMode}) {
               case ${UegsDebugViewMode.BaseColor}:
