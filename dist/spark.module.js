@@ -7185,6 +7185,12 @@ const UEGS_DEBUG_CAPTURE_MAGIC = 1430603588;
 const UEGS_DEBUG_CAPTURE_VERSION = 1;
 const UEGS_DEBUG_CAPTURE_HEADER_BYTES = 32;
 const UEGS_DEBUG_CAPTURE_RECORD_BYTES = 104;
+const UEGS_DEBUG_CAPTURE_HAS_SCENE_COLOR = 1 << 0;
+const UEGS_DEBUG_CAPTURE_HAS_TARGET_BASE_COLOR = 1 << 1;
+const UEGS_DEBUG_CAPTURE_HAS_TARGET_NORMAL = 1 << 2;
+const UEGS_DEBUG_CAPTURE_HAS_SCENE_NORMAL = 1 << 3;
+const UEGS_DEBUG_CAPTURE_HAS_DIRECT_SHADOWED = 1 << 4;
+const UEGS_DEBUG_CAPTURE_HAS_DIRECT_UNSHADOWED = 1 << 5;
 const MAX_DIRECTIONAL_LIGHTS = 8;
 const MAX_LOCAL_LIGHTS = 16;
 var UegsPayloadMaterialTruthSource = /* @__PURE__ */ ((UegsPayloadMaterialTruthSource2) => {
@@ -7485,9 +7491,7 @@ function scaleUegsComparisonViewpointToSceneBounds(comparisonViewpoint, manifest
   }
   const manifestOrigin = convertUegsPositionToSpzBasis(rawManifestOrigin);
   const manifestExtent = convertUegsExtentToSpzBasis(rawManifestExtent);
-  const sceneExtent = sceneBounds.getSize(new THREE.Vector3()).multiplyScalar(
-    0.5
-  );
+  const sceneExtent = sceneBounds.getSize(new THREE.Vector3()).multiplyScalar(0.5);
   const candidateRatios = [sceneExtent.x, sceneExtent.y, sceneExtent.z].map((value, index) => {
     const denominator = manifestExtent.getComponent(index);
     return denominator > 1e-6 ? value / denominator : Number.NaN;
@@ -7889,6 +7893,16 @@ function parseUegsDebugCaptureSidecar(input) {
   const sceneNormal = new Float32Array(textureSize2.maxSplats * 4);
   const directShadowed = new Float32Array(textureSize2.maxSplats * 4);
   const directUnshadowed = new Float32Array(textureSize2.maxSplats * 4);
+  const applyDebugCaptureMask = (values, dest, hasChannel) => {
+    if (!hasChannel) {
+      values[dest + 0] = 0;
+      values[dest + 1] = 0;
+      values[dest + 2] = 0;
+      values[dest + 3] = 0;
+      return;
+    }
+    values[dest + 3] = 1;
+  };
   let sceneColorCount = 0;
   let targetBaseColorCount = 0;
   let targetNormalCount = 0;
@@ -7903,10 +7917,7 @@ function parseUegsDebugCaptureSidecar(input) {
     }
     offset += 16;
     for (let channel = 0; channel < 4; channel += 1) {
-      targetBaseColor[dest + channel] = readFloat32(
-        view,
-        offset + channel * 4
-      );
+      targetBaseColor[dest + channel] = readFloat32(view, offset + channel * 4);
     }
     offset += 16;
     for (let channel = 0; channel < 4; channel += 1) {
@@ -7933,22 +7944,34 @@ function parseUegsDebugCaptureSidecar(input) {
     offset += 1;
     offset += 1;
     offset += 2;
-    if ((flags & 1 << 0) !== 0) {
+    const hasSceneColor = (flags & UEGS_DEBUG_CAPTURE_HAS_SCENE_COLOR) !== 0;
+    const hasTargetBaseColor = (flags & UEGS_DEBUG_CAPTURE_HAS_TARGET_BASE_COLOR) !== 0;
+    const hasTargetNormal = (flags & UEGS_DEBUG_CAPTURE_HAS_TARGET_NORMAL) !== 0;
+    const hasSceneNormal = (flags & UEGS_DEBUG_CAPTURE_HAS_SCENE_NORMAL) !== 0;
+    const hasDirectShadowed = (flags & UEGS_DEBUG_CAPTURE_HAS_DIRECT_SHADOWED) !== 0;
+    const hasDirectUnshadowed = (flags & UEGS_DEBUG_CAPTURE_HAS_DIRECT_UNSHADOWED) !== 0;
+    applyDebugCaptureMask(sceneColor, dest, hasSceneColor);
+    applyDebugCaptureMask(targetBaseColor, dest, hasTargetBaseColor);
+    applyDebugCaptureMask(targetNormal, dest, hasTargetNormal);
+    applyDebugCaptureMask(sceneNormal, dest, hasSceneNormal);
+    applyDebugCaptureMask(directShadowed, dest, hasDirectShadowed);
+    applyDebugCaptureMask(directUnshadowed, dest, hasDirectUnshadowed);
+    if (hasSceneColor) {
       sceneColorCount += 1;
     }
-    if ((flags & 1 << 1) !== 0) {
+    if (hasTargetBaseColor) {
       targetBaseColorCount += 1;
     }
-    if ((flags & 1 << 2) !== 0) {
+    if (hasTargetNormal) {
       targetNormalCount += 1;
     }
-    if ((flags & 1 << 3) !== 0) {
+    if (hasSceneNormal) {
       sceneNormalCount += 1;
     }
-    if ((flags & 1 << 4) !== 0) {
+    if (hasDirectShadowed) {
       directShadowedCount += 1;
     }
-    if ((flags & 1 << 5) !== 0) {
+    if (hasDirectUnshadowed) {
       directUnshadowedCount += 1;
     }
   }
@@ -8441,7 +8464,10 @@ function ensureUegsGpuResources(packedSplats) {
   const capturedDirectUnshadowedTexture = new DynoSampler2DArray({
     key: "uegsCapturedDirectUnshadowed",
     value: makeFloatTextureArray(
-      buildExactGeometryTextureData(debugCapture == null ? void 0 : debugCapture.directUnshadowed, textureSize2),
+      buildExactGeometryTextureData(
+        debugCapture == null ? void 0 : debugCapture.directUnshadowed,
+        textureSize2
+      ),
       textureSize2.width,
       textureSize2.height,
       textureSize2.depth
@@ -8902,6 +8928,7 @@ function makeUegsModifier(mesh) {
             }
             vec3 uegsFinalRgb = ${useSerializedSceneAppearanceForFinalView ? "uegsSerializedBaseColor" : "uegsEmissiveAmbientOcclusion.rgb + uegsAmbient + uegsDirectLighting"};
             vec3 uegsDebugRgb = uegsFinalRgb;
+            float uegsDebugOpacity = uegsOpacity;
             switch (${inputs.debugViewMode}) {
               case ${1}:
                 uegsDebugRgb = ${useSerializedBaseColorForBaseView ? "uegsSerializedBaseColor" : "uegsBaseMetallic.rgb"};
@@ -8911,21 +8938,27 @@ function makeUegsModifier(mesh) {
                 break;
               case ${19}:
                 uegsDebugRgb = clamp(uegsCapturedSceneColor.rgb, 0.0, 1.0);
+                uegsDebugOpacity *= uegsCapturedSceneColor.a;
                 break;
               case ${20}:
                 uegsDebugRgb = clamp(uegsCapturedTargetBaseColor.rgb, 0.0, 1.0);
+                uegsDebugOpacity *= uegsCapturedTargetBaseColor.a;
                 break;
               case ${21}:
                 uegsDebugRgb = clamp(uegsCapturedTargetNormal.rgb, 0.0, 1.0);
+                uegsDebugOpacity *= uegsCapturedTargetNormal.a;
                 break;
               case ${22}:
                 uegsDebugRgb = clamp(uegsCapturedSceneNormal.rgb, 0.0, 1.0);
+                uegsDebugOpacity *= uegsCapturedSceneNormal.a;
                 break;
               case ${23}:
                 uegsDebugRgb = clamp(uegsCapturedDirectShadowed.rgb, 0.0, 1.0);
+                uegsDebugOpacity *= uegsCapturedDirectShadowed.a;
                 break;
               case ${24}:
                 uegsDebugRgb = clamp(uegsCapturedDirectUnshadowed.rgb, 0.0, 1.0);
+                uegsDebugOpacity *= uegsCapturedDirectUnshadowed.a;
                 break;
               case ${2}:
                 uegsDebugRgb = uegsNormal * 0.5 + 0.5;
@@ -8979,7 +9012,7 @@ function makeUegsModifier(mesh) {
               default:
                 break;
             }
-            ${outputs.rgba} = vec4(uegsDebugRgb, uegsOpacity);
+            ${outputs.rgba} = vec4(uegsDebugRgb, uegsDebugOpacity);
             ${outputs.renderCenter} = uegsRenderCenter;
             ${outputs.renderScales} = uegsRenderScales;
             ${outputs.renderQuaternion} = uegsRenderQuaternion;

@@ -175,7 +175,7 @@ function buildSceneLightingFixture(
   );
 }
 
-function buildDebugCaptureFixture() {
+function buildDebugCaptureFixture(options?: { channelFlags?: number }) {
   const bytes = new ArrayBuffer(32 + 104);
   const view = new DataView(bytes);
   let offset = 0;
@@ -214,7 +214,7 @@ function buildDebugCaptureFixture() {
   writeVec4(0.1, 0.3, 0.5, 1.0); // scene normal
   writeVec4(0.25, 0.35, 0.45, 1.0); // direct shadowed
   writeVec4(0.65, 0.75, 0.85, 1.0); // direct unshadowed
-  view.setUint32(offset, 0x3f, true);
+  view.setUint32(offset, options?.channelFlags ?? 0x3f, true);
   offset += 4;
   view.setUint8(offset, 1);
   offset += 1;
@@ -462,8 +462,29 @@ approx(debugCapture.targetNormal[2], 0.6);
 approx(debugCapture.sceneNormal[0], 0.1);
 approx(debugCapture.directShadowed[0], 0.25);
 approx(debugCapture.directUnshadowed[2], 0.85);
+assert.strictEqual(debugCapture.sceneColor[3], 1);
+assert.strictEqual(debugCapture.targetBaseColor[3], 1);
+assert.strictEqual(debugCapture.targetNormal[3], 1);
+assert.strictEqual(debugCapture.sceneNormal[3], 1);
+assert.strictEqual(debugCapture.directShadowed[3], 1);
+assert.strictEqual(debugCapture.directUnshadowed[3], 1);
 assert.strictEqual(debugCapture.telemetry.sceneColorCount, 1);
 assert.strictEqual(debugCapture.telemetry.directShadowedCount, 1);
+
+const maskedDebugCapture = parseUegsDebugCaptureSidecar(
+  buildDebugCaptureFixture({ channelFlags: 1 << 1 }),
+);
+assert.strictEqual(maskedDebugCapture.telemetry.sceneColorCount, 0);
+assert.strictEqual(maskedDebugCapture.telemetry.targetBaseColorCount, 1);
+assert.strictEqual(maskedDebugCapture.sceneColor[0], 0);
+assert.strictEqual(maskedDebugCapture.sceneColor[1], 0);
+assert.strictEqual(maskedDebugCapture.sceneColor[2], 0);
+assert.strictEqual(maskedDebugCapture.sceneColor[3], 0);
+approx(maskedDebugCapture.targetBaseColor[0], 0.4);
+approx(maskedDebugCapture.targetBaseColor[1], 0.5);
+approx(maskedDebugCapture.targetBaseColor[2], 0.6);
+assert.strictEqual(maskedDebugCapture.targetBaseColor[3], 1);
+assert.strictEqual(maskedDebugCapture.directShadowed[3], 0);
 
 const bakedMesh = buildFakeMesh(buildBundleFixture(6));
 const bakedSplatMesh = asSplatMesh(bakedMesh);
@@ -492,6 +513,39 @@ approx(bakedResources.exactQuaternionTexture.value.image.data[3], 0.5);
 approx(bakedResources.capturedSceneColorTexture.value.image.data[0], 0.8);
 approx(bakedResources.capturedTargetBaseColorTexture.value.image.data[1], 0.5);
 approx(bakedResources.capturedDirectShadowedTexture.value.image.data[2], 0.45);
+assert.strictEqual(
+  bakedResources.capturedSceneColorTexture.value.image.data[3],
+  1,
+);
+assert.strictEqual(
+  bakedResources.capturedTargetBaseColorTexture.value.image.data[3],
+  1,
+);
+assert.strictEqual(
+  bakedResources.capturedDirectShadowedTexture.value.image.data[3],
+  1,
+);
+
+const maskedBundle = buildBundleFixture(6);
+maskedBundle.debugCapture = parseUegsDebugCaptureSidecar(
+  buildDebugCaptureFixture({ channelFlags: 1 << 1 }),
+);
+const maskedMesh = buildFakeMesh(maskedBundle);
+assert.strictEqual(configureUegsBundleForMesh(asSplatMesh(maskedMesh)), true);
+const maskedResources = maskedMesh.packedSplats.extra.uegsGpuResources;
+assert.ok(maskedResources);
+assert.strictEqual(
+  maskedResources.capturedSceneColorTexture.value.image.data[3],
+  0,
+);
+assert.strictEqual(
+  maskedResources.capturedTargetBaseColorTexture.value.image.data[3],
+  1,
+);
+assert.strictEqual(
+  maskedResources.capturedDirectShadowedTexture.value.image.data[3],
+  0,
+);
 assert.strictEqual(setUegsBakedShadowEnabled(bakedSplatMesh, false), true);
 assert.strictEqual(setUegsDirectLightingEnabled(bakedSplatMesh, false), true);
 assert.strictEqual(setUegsSkyLightingEnabled(bakedSplatMesh, false), true);
