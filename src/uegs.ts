@@ -122,10 +122,14 @@ export type UegsManifest = {
     color_semantic?: string;
     appearance_encoding?: string;
     appearance_intent?: string;
+    scene_appearance_build_method?: string;
+    capture_backed_baked_final?: boolean;
+    strict_baked_shadow_transfer_required?: boolean;
   };
   settings?: {
     export_format?: string;
     export_appearance_mode?: string;
+    preview_appearance_mode?: string;
   };
   scene_lighting_contract?: {
     path?: string;
@@ -369,6 +373,18 @@ export type UegsSparkRenderContract = {
   flipNormalsToView: boolean;
   usePayloadOpacity: boolean;
   useSerializedBaseColorForBaseView: boolean;
+  reason: string;
+};
+
+export type UegsEditorPreviewContract = {
+  presentationProfile: "ue-presentation";
+  presentationExposure: number;
+  sortRadial: boolean;
+  sort32: boolean;
+  stochastic: boolean;
+  opaqueShellCoverage: boolean;
+  preBlurAmount: number;
+  blurAmount: number;
   reason: string;
 };
 
@@ -678,6 +694,52 @@ export function parseUegsManifest(json: string | JsonRecord): UegsManifest {
     );
   }
   return root as UegsManifest;
+}
+
+export function getUegsEditorPreviewContract(
+  manifest: UegsManifest | null | undefined,
+): UegsEditorPreviewContract | undefined {
+  const payloadContract = manifest?.payload_contract;
+  const settings = manifest?.settings;
+  const exportAppearanceMode =
+    typeof settings?.export_appearance_mode === "string"
+      ? settings.export_appearance_mode.toLowerCase()
+      : "";
+  const previewAppearanceMode =
+    typeof settings?.preview_appearance_mode === "string"
+      ? settings.preview_appearance_mode.toLowerCase()
+      : "";
+  const colorSemantic =
+    typeof payloadContract?.color_semantic === "string"
+      ? payloadContract.color_semantic.toLowerCase()
+      : "";
+  const appearanceIntent =
+    typeof payloadContract?.appearance_intent === "string"
+      ? payloadContract.appearance_intent.toLowerCase()
+      : "";
+
+  const isFinalGeneratedPreview =
+    exportAppearanceMode === "baked" &&
+    previewAppearanceMode === "match_export" &&
+    colorSemantic === "baked_scene_appearance_linear" &&
+    (payloadContract?.capture_backed_baked_final === true ||
+      appearanceIntent === "baked_capture_parity_sh_residual");
+  if (!isFinalGeneratedPreview) {
+    return undefined;
+  }
+
+  return {
+    presentationProfile: "ue-presentation",
+    presentationExposure: 1.0,
+    sortRadial: false,
+    sort32: true,
+    stochastic: false,
+    opaqueShellCoverage: true,
+    preBlurAmount: 0.0,
+    blurAmount: 0.0,
+    reason:
+      "UEGS baked preview manifests that declare preview_appearance_mode=match_export and baked_scene_appearance_linear should open in Spark Editor as the final exported surface rather than the generic transparent Spark preview path.",
+  };
 }
 
 export function parseUegsComparisonViewpoint(

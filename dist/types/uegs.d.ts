@@ -81,10 +81,14 @@ export type UegsManifest = {
         color_semantic?: string;
         appearance_encoding?: string;
         appearance_intent?: string;
+        scene_appearance_build_method?: string;
+        capture_backed_baked_final?: boolean;
+        strict_baked_shadow_transfer_required?: boolean;
     };
     settings?: {
         export_format?: string;
         export_appearance_mode?: string;
+        preview_appearance_mode?: string;
     };
     scene_lighting_contract?: {
         path?: string;
@@ -315,6 +319,17 @@ export type UegsSparkRenderContract = {
     useSerializedBaseColorForBaseView: boolean;
     reason: string;
 };
+export type UegsEditorPreviewContract = {
+    presentationProfile: "ue-presentation";
+    presentationExposure: number;
+    sortRadial: boolean;
+    sort32: boolean;
+    stochastic: boolean;
+    opaqueShellCoverage: boolean;
+    preBlurAmount: number;
+    blurAmount: number;
+    reason: string;
+};
 type UegsRenderableExactSplatGeometry = {
     centers: Float32Array;
     scales: Float32Array;
@@ -322,6 +337,7 @@ type UegsRenderableExactSplatGeometry = {
     source: "payload" | "spz" | "hybrid";
 };
 export declare function parseUegsManifest(json: string | JsonRecord): UegsManifest;
+export declare function getUegsEditorPreviewContract(manifest: UegsManifest | null | undefined): UegsEditorPreviewContract | undefined;
 export declare function parseUegsComparisonViewpoint(manifest: UegsManifest | null | undefined): UegsComparisonViewpoint | null;
 export declare function scaleUegsComparisonViewpointToSceneBounds(comparisonViewpoint: UegsComparisonViewpoint | null | undefined, manifest: UegsManifest | null | undefined, sceneBounds: THREE.Box3 | null | undefined): UegsComparisonViewpoint | null;
 export declare function parseUegsSceneLightingContract(json: string | JsonRecord): UegsSceneLightingContract;

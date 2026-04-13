@@ -10,6 +10,7 @@ import {
   alignUegsNormalToShellHemisphere,
   applyUegsSparkViewContract,
   configureUegsBundleForMesh,
+  getUegsEditorPreviewContract,
   getUegsSparkRenderContract,
   getUegsSparkViewContract,
   inspectUegsRuntimeTelemetry,
@@ -387,6 +388,37 @@ const manifest = parseUegsManifest(
 );
 assert.strictEqual(manifest.tool, "UEGS");
 assert.strictEqual(manifest.settings?.export_format, "Spz");
+assert.strictEqual(getUegsEditorPreviewContract(manifest), undefined);
+
+const bakedPreviewManifest = parseUegsManifest(
+  JSON.stringify({
+    tool: "UEGS",
+    status: "gaussian_payload_export",
+    settings: {
+      export_format: "Spz",
+      export_appearance_mode: "baked",
+      preview_appearance_mode: "match_export",
+    },
+    payload_contract: {
+      color_semantic: "baked_scene_appearance_linear",
+      appearance_encoding: "conservative_first_order_sh",
+      appearance_intent: "baked_capture_parity_sh_residual",
+      capture_backed_baked_final: true,
+    },
+  }),
+);
+const bakedPreviewContract = getUegsEditorPreviewContract(bakedPreviewManifest);
+assert.ok(bakedPreviewContract);
+assert.strictEqual(
+  bakedPreviewContract?.presentationProfile,
+  "ue-presentation",
+);
+assert.strictEqual(bakedPreviewContract?.sortRadial, false);
+assert.strictEqual(bakedPreviewContract?.sort32, true);
+assert.strictEqual(bakedPreviewContract?.stochastic, false);
+assert.strictEqual(bakedPreviewContract?.opaqueShellCoverage, true);
+assert.strictEqual(bakedPreviewContract?.preBlurAmount, 0);
+assert.strictEqual(bakedPreviewContract?.blurAmount, 0);
 
 const sceneLighting = parseUegsSceneLightingContract(
   JSON.stringify({

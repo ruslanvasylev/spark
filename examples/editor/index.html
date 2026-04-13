@@ -69,7 +69,7 @@
     import * as THREE from "three";
     import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     import { GUI } from "lil-gui";
-    import { constructGrid, SparkControls, SparkRenderer, SplatMesh, textSplats, dyno, transcodeSpz, isMobile, isPcSogs, LN_SCALE_MIN, LN_SCALE_MAX, parseUegsComparisonViewpoint, parseUegsManifest, scaleUegsComparisonViewpointToSceneBounds } from "@sparkjsdev/spark";
+    import { constructGrid, SparkControls, SparkRenderer, SplatMesh, textSplats, dyno, transcodeSpz, isMobile, isPcSogs, LN_SCALE_MIN, LN_SCALE_MAX, getUegsEditorPreviewContract, parseUegsComparisonViewpoint, parseUegsManifest, scaleUegsComparisonViewpointToSceneBounds } from "@sparkjsdev/spark";
     import { getAssetFileURL } from "/examples/js/get-asset-url.js";
 
     const scene = new THREE.Scene();
@@ -712,6 +712,7 @@
         !explicitCameraRequested ? parseUegsComparisonViewpoint(comparisonManifest) : null;
       currentComparisonViewpoint = comparisonViewpoint;
       currentComparisonManifest = comparisonManifest;
+      applyUegsEditorPreviewContract(comparisonManifest);
       guiOptions.openCv = true;
       guiOptions.autoRotate = false;
       if (openCvOverride !== null) {
@@ -1107,6 +1108,30 @@
       return resolved;
     }
 
+    let currentUegsEditorPreviewContract = null;
+    function applyUegsEditorPreviewContract(manifest) {
+      const contract = getUegsEditorPreviewContract(manifest);
+      currentUegsEditorPreviewContract = contract ?? null;
+      if (!contract) {
+        return null;
+      }
+      spark.defaultView.sortRadial = contract.sortRadial;
+      spark.defaultView.sort32 = contract.sort32;
+      spark.defaultView.stochastic = contract.stochastic;
+      spark.opaqueShellCoverage = contract.opaqueShellCoverage;
+      if (spark.renderContractBaseline) {
+        spark.renderContractBaseline.opaqueShellCoverage = contract.opaqueShellCoverage;
+      }
+      spark.preBlurAmount = contract.preBlurAmount;
+      spark.blurAmount = contract.blurAmount;
+      applyPresentationProfile({
+        profile: contract.presentationProfile,
+        exposure: contract.presentationExposure,
+      });
+      touch();
+      return contract;
+    }
+
     const getEditorRuntimeState = () => ({
       cameraContract: {
         modeRequested: cameraModeRequested,
@@ -1140,6 +1165,7 @@
       presentationContract: {
         requestedProfile: guiOptions.presentationProfile,
         requestedExposure: guiOptions.presentationExposure,
+        manifestPreviewContract: currentUegsEditorPreviewContract,
         runtime: {
           ...resolveRendererPresentation(),
           toneMappingName: toneMappingName(renderer.toneMapping),

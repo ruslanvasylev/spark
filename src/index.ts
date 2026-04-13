@@ -7,6 +7,7 @@ export {
   UegsPayloadAppearanceEncoding,
   UegsPayloadColorSemantic,
   UegsPayloadMaterialTruthSource,
+  getUegsEditorPreviewContract,
   getUegsSparkRenderContract,
   applyUegsSparkViewContract,
   attachUegsBundle,

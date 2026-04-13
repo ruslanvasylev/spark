@@ -7451,6 +7451,29 @@ function parseUegsManifest(json) {
   }
   return root;
 }
+function getUegsEditorPreviewContract(manifest) {
+  const payloadContract = manifest == null ? void 0 : manifest.payload_contract;
+  const settings = manifest == null ? void 0 : manifest.settings;
+  const exportAppearanceMode = typeof (settings == null ? void 0 : settings.export_appearance_mode) === "string" ? settings.export_appearance_mode.toLowerCase() : "";
+  const previewAppearanceMode = typeof (settings == null ? void 0 : settings.preview_appearance_mode) === "string" ? settings.preview_appearance_mode.toLowerCase() : "";
+  const colorSemantic = typeof (payloadContract == null ? void 0 : payloadContract.color_semantic) === "string" ? payloadContract.color_semantic.toLowerCase() : "";
+  const appearanceIntent = typeof (payloadContract == null ? void 0 : payloadContract.appearance_intent) === "string" ? payloadContract.appearance_intent.toLowerCase() : "";
+  const isFinalGeneratedPreview = exportAppearanceMode === "baked" && previewAppearanceMode === "match_export" && colorSemantic === "baked_scene_appearance_linear" && ((payloadContract == null ? void 0 : payloadContract.capture_backed_baked_final) === true || appearanceIntent === "baked_capture_parity_sh_residual");
+  if (!isFinalGeneratedPreview) {
+    return void 0;
+  }
+  return {
+    presentationProfile: "ue-presentation",
+    presentationExposure: 1,
+    sortRadial: false,
+    sort32: true,
+    stochastic: false,
+    opaqueShellCoverage: true,
+    preBlurAmount: 0,
+    blurAmount: 0,
+    reason: "UEGS baked preview manifests that declare preview_appearance_mode=match_export and baked_scene_appearance_linear should open in Spark Editor as the final exported surface rather than the generic transparent Spark preview path."
+  };
+}
 function parseUegsComparisonViewpoint(manifest) {
   const viewpoint = manifest == null ? void 0 : manifest.comparison_viewpoint;
   if (!viewpoint) {
@@ -15889,6 +15912,7 @@ exports.floatToUint8 = floatToUint8;
 exports.fromHalf = fromHalf;
 exports.generators = generators;
 exports.getSplatFileType = getSplatFileType;
+exports.getUegsEditorPreviewContract = getUegsEditorPreviewContract;
 exports.getUegsSparkRenderContract = getUegsSparkRenderContract;
 exports.getUegsSparkViewContract = getUegsSparkViewContract;
 exports.imageSplats = imageSplats;
