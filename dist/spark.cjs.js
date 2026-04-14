@@ -7468,10 +7468,10 @@ function getUegsEditorPreviewContract(manifest) {
     sortRadial: false,
     sort32: true,
     stochastic: false,
-    opaqueShellCoverage: true,
+    opaqueShellCoverage: false,
     preBlurAmount: 0,
     blurAmount: 0,
-    reason: "UEGS baked preview manifests that declare preview_appearance_mode=match_export and baked_scene_appearance_linear should open in Spark Editor as the final exported surface rather than the generic transparent Spark preview path."
+    reason: "UEGS baked preview manifests that declare preview_appearance_mode=match_export and baked_scene_appearance_linear should open in Spark Editor as the final exported splat surface rather than collapsing the result into an opaque shell preview path."
   };
 }
 function parseUegsComparisonViewpoint(manifest) {
@@ -7680,6 +7680,21 @@ function parseUegsSceneLightingContract(json) {
     directionalLights,
     localLights,
     skyLights
+  };
+}
+function buildNeutralUegsSceneLightingContract() {
+  return {
+    contract: "uegs_explorable_scene_lighting_v1",
+    linearSceneColor: true,
+    toneMappingApplied: false,
+    lensEffectsApplied: false,
+    materialAmbientOcclusionExported: true,
+    geometryContactShadowApproximationExpected: false,
+    bakedGeometryShadowTransferExported: false,
+    intensityUnits: "ue_raw_light_component_intensity",
+    directionalLights: [],
+    localLights: [],
+    skyLights: []
   };
 }
 function parseUegsGaussianPayload(input) {
@@ -8089,9 +8104,10 @@ async function loadOptionalUegsBundleFromUrl(spzUrl, requestInit = {}) {
   const debugCaptureFileName = basenameFromPath(
     (_d = manifest.gaussian_debug_capture_sidecar) == null ? void 0 : _d.path
   );
+  const shouldRequireSceneLighting = declaresExplorableBundle || manifest.scene_lighting_contract != null;
   const [payloadResponse, sceneLightingResponse, debugCaptureResponse] = await Promise.all([
     fetchMaybe(siblingUrl(spzUrl, payloadFileName), requestInit),
-    fetchMaybe(siblingUrl(spzUrl, sceneLightingFileName), requestInit),
+    shouldRequireSceneLighting ? fetchMaybe(siblingUrl(spzUrl, sceneLightingFileName), requestInit) : Promise.resolve(void 0),
     debugCaptureFileName ? fetchMaybe(siblingUrl(spzUrl, debugCaptureFileName), requestInit) : Promise.resolve(void 0)
   ]);
   if (!payloadResponse) {
@@ -8099,7 +8115,7 @@ async function loadOptionalUegsBundleFromUrl(spzUrl, requestInit = {}) {
       `UEGS bundle manifest was found for ${spzUrl}, but ${payloadFileName} is missing`
     );
   }
-  if (!sceneLightingResponse) {
+  if (shouldRequireSceneLighting && !sceneLightingResponse) {
     throw new Error(
       `UEGS bundle manifest was found for ${spzUrl}, but ${sceneLightingFileName} is missing`
     );
@@ -8111,13 +8127,13 @@ async function loadOptionalUegsBundleFromUrl(spzUrl, requestInit = {}) {
   }
   const [payloadBytes, sceneLightingJson, debugCaptureBytes] = await Promise.all([
     payloadResponse.arrayBuffer(),
-    sceneLightingResponse.text(),
+    (sceneLightingResponse == null ? void 0 : sceneLightingResponse.text()) ?? Promise.resolve(void 0),
     (debugCaptureResponse == null ? void 0 : debugCaptureResponse.arrayBuffer()) ?? Promise.resolve(void 0)
   ]);
   return {
     manifest,
     payload: parseUegsGaussianPayload(payloadBytes),
-    sceneLighting: parseUegsSceneLightingContract(sceneLightingJson),
+    sceneLighting: sceneLightingJson ? parseUegsSceneLightingContract(sceneLightingJson) : buildNeutralUegsSceneLightingContract(),
     debugCapture: debugCaptureBytes ? parseUegsDebugCaptureSidecar(debugCaptureBytes) : void 0
   };
 }
@@ -8164,17 +8180,54 @@ function resolveUegsExtra(source) {
 function isExplorableSceneParityEncoding(appearanceEncoding) {
   return appearanceEncoding === 3 || appearanceEncoding === 4;
 }
+function isCaptureBackedBakedFinalManifest(manifest) {
+  const payloadContract = manifest == null ? void 0 : manifest.payload_contract;
+  const settings = manifest == null ? void 0 : manifest.settings;
+  const exportAppearanceMode = typeof (settings == null ? void 0 : settings.export_appearance_mode) === "string" ? settings.export_appearance_mode.toLowerCase() : "";
+  const previewAppearanceMode = typeof (settings == null ? void 0 : settings.preview_appearance_mode) === "string" ? settings.preview_appearance_mode.toLowerCase() : "";
+  const colorSemantic = typeof (payloadContract == null ? void 0 : payloadContract.color_semantic) === "string" ? payloadContract.color_semantic.toLowerCase() : "";
+  const appearanceIntent = typeof (payloadContract == null ? void 0 : payloadContract.appearance_intent) === "string" ? payloadContract.appearance_intent.toLowerCase() : "";
+  return exportAppearanceMode === "baked" && previewAppearanceMode === "match_export" && colorSemantic === "baked_scene_appearance_linear" && ((payloadContract == null ? void 0 : payloadContract.capture_backed_baked_final) === true || appearanceIntent === "baked_capture_parity_sh_residual");
+}
+function isCaptureBackedBakedFinalBundle(bundle) {
+  return Boolean(
+    bundle && bundle.payload.header.colorSemantic === 3 && isCaptureBackedBakedFinalManifest(bundle.manifest)
+  );
+}
 function bundleUsesOpaqueSurfaceShell(bundle) {
   if (!bundle) {
     return false;
   }
   const { header } = bundle.payload;
-  return isExplorableSceneParityEncoding(header.appearanceEncoding) && header.recordCount > 0 && header.opaqueCount === header.recordCount && header.maskedCount === 0 && header.translucentCount === 0;
+  return (isExplorableSceneParityEncoding(header.appearanceEncoding) || isCaptureBackedBakedFinalBundle(bundle)) && header.recordCount > 0 && header.opaqueCount === header.recordCount && header.maskedCount === 0 && header.translucentCount === 0;
+}
+function resolveDefaultUegsMaxSh(bundle) {
+  if ((bundle == null ? void 0 : bundle.payload.header.appearanceEncoding) === 1) {
+    return 1;
+  }
+  return 0;
+}
+function bundleShouldAutoConfigureUegsRuntime(bundle) {
+  return Boolean(
+    bundle && (isExplorableSceneParityEncoding(
+      bundle.payload.header.appearanceEncoding
+    ) || isCaptureBackedBakedFinalBundle(bundle))
+  );
 }
 function getUegsSparkViewContract(source) {
   const bundle = resolveUegsBundle(source);
   if (!bundleUsesOpaqueSurfaceShell(bundle)) {
     return void 0;
+  }
+  if (isCaptureBackedBakedFinalBundle(bundle)) {
+    return {
+      sortRadial: false,
+      sort32: true,
+      stochastic: false,
+      sort360: false,
+      depthBias: 0,
+      reason: "UEGS baked final bundles should use the same stable non-radial depth ordering as the canonical UEGS preview so Spark accumulates the exported Gaussian surface coherently instead of reverting to generic stochastic shell noise."
+    };
   }
   return {
     sortRadial: false,
@@ -8191,10 +8244,23 @@ function getUegsSparkRenderContract(source) {
   if (!bundleUsesOpaqueSurfaceShell(bundle)) {
     return void 0;
   }
-  const contract = {
+  const contract = isCaptureBackedBakedFinalBundle(bundle) ? {
     enable2DGS: false,
     useUegsProjectedEllipse: false,
-    opaqueShellCoverage: true,
+    opaqueShellCoverage: false,
+    maxPixelRadius: 512,
+    flattenMinAxisTo2D: false,
+    clampMinimumShellScale: true,
+    cullBackfacingShellSplats: false,
+    orientNormalsToShellHemisphere: false,
+    flipNormalsToView: false,
+    usePayloadOpacity: true,
+    useSerializedBaseColorForBaseView: false,
+    reason: "UEGS baked final bundles should preserve the exported exact ellipsoid splats and continuous Gaussian falloff while keeping the serialized baked scene appearance as the final view color. Do not collapse the final surface into opaque shell disks."
+  } : {
+    enable2DGS: false,
+    useUegsProjectedEllipse: false,
+    opaqueShellCoverage: false,
     maxPixelRadius: 512,
     flattenMinAxisTo2D: false,
     clampMinimumShellScale: true,
@@ -8203,7 +8269,7 @@ function getUegsSparkRenderContract(source) {
     flipNormalsToView: false,
     usePayloadOpacity: true,
     useSerializedBaseColorForBaseView: false,
-    reason: "UEGS explorable scene-parity bundles render most faithfully in Spark by keeping the payload's exact 3D ellipsoid geometry for coverage while preserving the exported shading normal as-is. Suppress splats whose exported surface normal faces away from the view so rear-layer baked-shadow values do not leak through the front surface, and keep the exported shading normal without reorienting it toward the derived shell frame."
+    reason: "UEGS explorable scene-parity bundles should preserve the exported 3D ellipsoid splats and continuous Gaussian falloff while keeping the payload geometry and shading normals intact. Suppress backfacing leakage with opacity weighting instead of turning the surface into opaque shell disks."
   };
   const override = (_a2 = resolveUegsExtra(source)) == null ? void 0 : _a2.uegsRenderContractOverride;
   return override ? {
@@ -9077,7 +9143,7 @@ function configureUegsBundleForMesh(mesh) {
   if (!bundle) {
     return false;
   }
-  if (bundle.payload.header.appearanceEncoding !== 3 && bundle.payload.header.appearanceEncoding !== 4) {
+  if (!bundleShouldAutoConfigureUegsRuntime(bundle)) {
     return false;
   }
   const extra = mesh.packedSplats.extra;
@@ -9085,7 +9151,7 @@ function configureUegsBundleForMesh(mesh) {
     return true;
   }
   mesh.enableViewToWorld = true;
-  mesh.maxSh = typeof extra.uegsRequestedMaxSh === "number" ? extra.uegsRequestedMaxSh : 0;
+  mesh.maxSh = typeof extra.uegsRequestedMaxSh === "number" ? extra.uegsRequestedMaxSh : resolveDefaultUegsMaxSh(bundle);
   mesh.uegsModifier = makeUegsModifier(mesh);
   extra.uegsAutoConfigured = true;
   return Boolean(mesh.uegsModifier);
