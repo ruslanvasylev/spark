@@ -69,7 +69,7 @@
     import * as THREE from "three";
     import { OrbitControls } from "three/addons/controls/OrbitControls.js";
     import { GUI } from "lil-gui";
-    import { constructGrid, SparkControls, SparkRenderer, SplatMesh, textSplats, dyno, transcodeSpz, isMobile, isPcSogs, LN_SCALE_MIN, LN_SCALE_MAX, getUegsEditorPreviewContract, parseUegsComparisonViewpoint, parseUegsManifest, scaleUegsComparisonViewpointToSceneBounds } from "@sparkjsdev/spark";
+    import { constructGrid, SparkControls, SparkRenderer, SplatMesh, textSplats, dyno, transcodeSpz, isMobile, isPcSogs, LN_SCALE_MIN, LN_SCALE_MAX, UegsDebugViewMode, getUegsEditorPreviewContract, parseUegsComparisonViewpoint, parseUegsManifest, scaleUegsComparisonViewpointToSceneBounds, loadOptionalUegsBundleFromUrl, attachUegsBundle, configureUegsBundleForMesh, inspectUegsRuntimeTelemetry, setUegsAmbientOcclusionEnabled, setUegsBakedShadowEnabled, setUegsDebugViewMode, setUegsDirectLightingEnabled, setUegsSkyLightingEnabled } from "@sparkjsdev/spark";
     import { getAssetFileURL } from "/examples/js/get-asset-url.js";
 
     const scene = new THREE.Scene();
@@ -130,6 +130,10 @@
     // Setup mouse controls to orbit the camera around
     const orbitControls = new OrbitControls(camera, renderer.domElement);
     orbitControls.enabled = false;
+    orbitControls.autoRotate = false;
+    orbitControls.autoRotateSpeed = 1.2;
+    orbitControls.enableDamping = true;
+    orbitControls.dampingFactor = 0.08;
     orbitControls.target.set(0, 0, 0);
     orbitControls.minDistance = 0.1;
     orbitControls.maxDistance = 10;
@@ -137,6 +141,8 @@
     let loadedBoundsRadius = 1;
     let loadedBoundsHeight = 0.5;
     let hasLoadedBounds = false;
+    let autoRotateRestorePose = null;
+    let orbitBeforeAutoRotate = null;
 
     const fileInput = document.querySelector("#file-input");
     fileInput.onchange = (event) => {
@@ -149,6 +155,11 @@
       resetOnLoad: true,
       loadOffset: 0,
       initialMaxSh: null,
+      uegsDebugViewMode: UegsDebugViewMode.Final,
+      uegsDirectLightingEnabled: true,
+      uegsSkyLightingEnabled: true,
+      uegsAmbientOcclusionEnabled: true,
+      uegsBakedShadowEnabled: true,
       openCv: true,
       autoRotate: true,
       orbit: false,
@@ -284,7 +295,100 @@
       return value.startsWith("#") ? value : `#${value}`;
     }
 
+    const UEGS_DEBUG_VIEW_OPTIONS = {
+      Final: UegsDebugViewMode.Final,
+      BaseColor: UegsDebugViewMode.BaseColor,
+      DirectLighting: UegsDebugViewMode.DirectLighting,
+      AmbientLighting: UegsDebugViewMode.AmbientLighting,
+      AmbientOcclusion: UegsDebugViewMode.AmbientOcclusion,
+      Metallic: UegsDebugViewMode.Metallic,
+      Roughness: UegsDebugViewMode.Roughness,
+      Opacity: UegsDebugViewMode.Opacity,
+      Shadow: UegsDebugViewMode.Shadow,
+      Normal: UegsDebugViewMode.Normal,
+      RawNormal: UegsDebugViewMode.RawNormal,
+      SerializedColor: UegsDebugViewMode.SerializedColor,
+      CapturedSceneColor: UegsDebugViewMode.CapturedSceneColor,
+      CapturedTargetBaseColor: UegsDebugViewMode.CapturedTargetBaseColor,
+      CapturedTargetNormal: UegsDebugViewMode.CapturedTargetNormal,
+      CapturedSceneNormal: UegsDebugViewMode.CapturedSceneNormal,
+      CapturedDirectShadowed: UegsDebugViewMode.CapturedDirectShadowed,
+      CapturedDirectUnshadowed: UegsDebugViewMode.CapturedDirectUnshadowed,
+    };
+
+    function normalizeUegsDebugViewQuery(value) {
+      if (value == null || value === "") {
+        return null;
+      }
+      if (/^\d+$/.test(String(value))) {
+        const parsed = Number.parseInt(String(value), 10);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      const normalized = String(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+      for (const [label, mode] of Object.entries(UEGS_DEBUG_VIEW_OPTIONS)) {
+        if (label.toLowerCase().replace(/[^a-z0-9]+/g, "") === normalized) {
+          return mode;
+        }
+      }
+      return null;
+    }
+
     const initialUrlParams = new URLSearchParams(window.location.search);
+    const initialUegsDebugViewMode = normalizeUegsDebugViewQuery(
+      initialUrlParams.get("uegsDebugView") ?? initialUrlParams.get("debugView"),
+    );
+    if (initialUegsDebugViewMode !== null) {
+      guiOptions.uegsDebugViewMode = initialUegsDebugViewMode;
+    }
+    const initialUegsDirectLighting = parseBooleanQuery(
+      initialUrlParams,
+      "uegsDirectLighting",
+      "directLighting",
+    );
+    if (initialUegsDirectLighting !== null) {
+      guiOptions.uegsDirectLightingEnabled = initialUegsDirectLighting;
+    }
+    const initialUegsSkyLighting = parseBooleanQuery(
+      initialUrlParams,
+      "uegsSkyLighting",
+      "skyLighting",
+    );
+    if (initialUegsSkyLighting !== null) {
+      guiOptions.uegsSkyLightingEnabled = initialUegsSkyLighting;
+    }
+    const initialUegsAmbientOcclusion = parseBooleanQuery(
+      initialUrlParams,
+      "uegsAmbientOcclusion",
+      "ambientOcclusion",
+    );
+    if (initialUegsAmbientOcclusion !== null) {
+      guiOptions.uegsAmbientOcclusionEnabled = initialUegsAmbientOcclusion;
+    }
+    const initialUegsBakedShadow = parseBooleanQuery(
+      initialUrlParams,
+      "uegsBakedShadow",
+      "bakedShadow",
+    );
+    if (initialUegsBakedShadow !== null) {
+      guiOptions.uegsBakedShadowEnabled = initialUegsBakedShadow;
+    }
+    const initialUegsDebugUi =
+      parseBooleanQuery(initialUrlParams, "uegsDebugUi", "debugUi") ?? false;
+    const initialAutoRotate = parseBooleanQuery(
+      initialUrlParams,
+      "autoRotate",
+    );
+    if (initialAutoRotate !== null) {
+      guiOptions.autoRotate = initialAutoRotate;
+    }
+    const initialOrbit = parseBooleanQuery(
+      initialUrlParams,
+      "orbit",
+      "orbitControls",
+    );
+    if (initialOrbit !== null) {
+      guiOptions.orbit = initialOrbit;
+    }
     const cameraModeRequested =
       (initialUrlParams.get("camera") ?? initialUrlParams.get("cameraMode") ?? "manifest").toLowerCase() === "fit"
         ? "fit"
@@ -356,6 +460,7 @@
       if (!applyBoundsClipPlanes(bounds)) {
         camera.updateProjectionMatrix();
       }
+      orbitControls.update();
       currentAppliedComparisonViewpoint = {
         positionX: comparisonViewpoint.positionX,
         positionY: comparisonViewpoint.positionY,
@@ -414,7 +519,9 @@
       if (!bounds || bounds.isEmpty()) {
         hasLoadedBounds = false;
         orbitControls.target.set(0, 0, 0);
+        orbitControls.minDistance = 0.1;
         orbitControls.maxDistance = 10;
+        controls.fpsMovement.moveSpeed = 4;
         return null;
       }
       hasLoadedBounds = true;
@@ -424,8 +531,55 @@
       loadedBoundsRadius = Math.max(radius * 1.5, 2);
       loadedBoundsHeight = Math.max(size.y * 0.3, radius * 0.15);
       orbitControls.target.copy(loadedBoundsCenter);
+      orbitControls.minDistance = Math.max(loadedBoundsRadius * 0.2, 0.1);
       orbitControls.maxDistance = Math.max(loadedBoundsRadius * 8, 10);
+      controls.fpsMovement.moveSpeed = Math.max(loadedBoundsRadius * 0.12, 6);
       return bounds;
+    }
+
+    function applyCameraControlMode({ focusCanvas = true } = {}) {
+      refreshLoadedBoundsCameraRig();
+      const orbitLikeMode = guiOptions.orbit || guiOptions.autoRotate;
+      orbitControls.enabled = orbitLikeMode;
+      orbitControls.autoRotate = guiOptions.autoRotate;
+      controls.pointerControls.enable = !orbitLikeMode;
+      rotX.enable(!orbitLikeMode);
+      rotY.enable(!orbitLikeMode);
+      rotZ.enable(!orbitLikeMode);
+      orbitControls.update();
+      if (focusCanvas) {
+        canvas.focus();
+      }
+    }
+
+    function setAutoRotateEnabled(value) {
+      const enabled = Boolean(value);
+      if (enabled === guiOptions.autoRotate) {
+        return guiOptions.autoRotate;
+      }
+
+      if (enabled) {
+        autoRotateRestorePose = getEditorCameraPose();
+        orbitBeforeAutoRotate = guiOptions.orbit;
+        guiOptions.orbit = true;
+        guiOptions.autoRotate = true;
+        applyCameraControlMode();
+        return guiOptions.autoRotate;
+      }
+
+      guiOptions.autoRotate = false;
+      orbitControls.autoRotate = false;
+      if (autoRotateRestorePose) {
+        setEditorCameraPose(autoRotateRestorePose);
+      }
+      autoRotateRestorePose = null;
+      if (typeof orbitBeforeAutoRotate === "boolean") {
+        guiOptions.orbit = orbitBeforeAutoRotate;
+      }
+      orbitBeforeAutoRotate = null;
+
+      applyCameraControlMode();
+      return guiOptions.autoRotate;
     }
 
     function placeStaticCamera() {
@@ -439,6 +593,7 @@
         );
         camera.lookAt(loadedBoundsCenter);
         applyBoundsClipPlanes(bounds);
+        orbitControls.update();
         return true;
       }
       camera.position.set(0, 0, 1);
@@ -447,6 +602,7 @@
       camera.near = 0.01;
       camera.far = 1000;
       camera.updateProjectionMatrix();
+      orbitControls.update();
       return false;
     }
 
@@ -714,7 +870,10 @@
       currentComparisonManifest = comparisonManifest;
       applyUegsEditorPreviewContract(comparisonManifest);
       guiOptions.openCv = true;
-      guiOptions.autoRotate = false;
+      guiOptions.autoRotate = initialAutoRotate ?? false;
+      guiOptions.orbit = initialOrbit ?? Boolean(comparisonViewpoint);
+      autoRotateRestorePose = null;
+      orbitBeforeAutoRotate = null;
       if (openCvOverride !== null) {
         guiOptions.openCv = openCvOverride;
       } else if (comparisonViewpoint?.sparkOpenCv != null) {
@@ -735,9 +894,11 @@
           let fileBytes;
           let fileName;
           let url = null;
+          let bundleUrl = null;
 
           // Check if splatFile is a URL string or a File object
           if (typeof splatFile === "string") {
+            bundleUrl = splatFile;
             // It's a URL, fetch it
             console.log(`Fetching ${splatFile}...`);
             fileBytes = new Uint8Array(await fetchWithProgress(splatFile));
@@ -765,10 +926,24 @@
           splatMesh.enableWorldToView = true;
           splatMesh.worldModifier = makeWorldModifier(splatMesh);
           await splatMesh.initialized;
-          if (guiOptions.initialMaxSh !== null) {
+          if (bundleUrl) {
+            const uegsBundle = await loadOptionalUegsBundleFromUrl(bundleUrl);
+            if (uegsBundle) {
+              attachUegsBundle(splatMesh.packedSplats, uegsBundle);
+              configureUegsBundleForMesh(splatMesh);
+            }
+          }
+          const skipInitialMaxShForAutoConfiguredUegs = Boolean(
+            splatMesh.packedSplats?.extra?.uegsAutoConfigured,
+          );
+          if (
+            guiOptions.initialMaxSh !== null &&
+            !skipInitialMaxShForAutoConfiguredUegs
+          ) {
             splatMesh.maxSh = guiOptions.initialMaxSh;
             splatMesh.updateGenerator();
           }
+          applyUegsDebugOptionsToMesh(splatMesh);
 
           if (!url) {
             // PC SOGS transcode not supported yet
@@ -820,6 +995,8 @@
         placeStaticCamera();
       }
 
+      applyCameraControlMode({ focusCanvas: false });
+
       // Restore focus to canvas for keyboard controls
       canvas.focus();
     }
@@ -830,6 +1007,121 @@
       const boxHelper = new THREE.Box3Helper(box, 0x00ff00);
       boxHelper.visible = guiOptions.viewBoundingBox;
       frame.add(boxHelper);
+    }
+
+    function applyUegsDebugOptionsToMesh(splatMesh) {
+      if (!(splatMesh instanceof SplatMesh)) {
+        return false;
+      }
+      const hasBundle = Boolean(splatMesh?.packedSplats?.extra?.uegsBundle);
+      if (!hasBundle) {
+        return false;
+      }
+      setUegsDebugViewMode(splatMesh, guiOptions.uegsDebugViewMode);
+      setUegsDirectLightingEnabled(
+        splatMesh,
+        guiOptions.uegsDirectLightingEnabled,
+      );
+      setUegsSkyLightingEnabled(splatMesh, guiOptions.uegsSkyLightingEnabled);
+      setUegsAmbientOcclusionEnabled(
+        splatMesh,
+        guiOptions.uegsAmbientOcclusionEnabled,
+      );
+      setUegsBakedShadowEnabled(splatMesh, guiOptions.uegsBakedShadowEnabled);
+      splatMesh.updateGenerator?.();
+      return true;
+    }
+
+    function applyUegsDebugOptionsToAllMeshes() {
+      frame.children.forEach((child) => {
+        if (child instanceof SplatMesh) {
+          applyUegsDebugOptionsToMesh(child);
+        }
+      });
+    }
+
+    function setUegsDebugOptions(partialOptions = {}) {
+      if (partialOptions == null || typeof partialOptions !== "object") {
+        return getEditorRuntimeState().debugState;
+      }
+      const nextDebugViewMode =
+        partialOptions.debugViewMode ?? partialOptions.uegsDebugViewMode;
+      const normalizedDebugViewMode = normalizeUegsDebugViewQuery(
+        nextDebugViewMode,
+      );
+      if (normalizedDebugViewMode !== null) {
+        guiOptions.uegsDebugViewMode = normalizedDebugViewMode;
+      }
+      if (
+        partialOptions.directLightingEnabled != null ||
+        partialOptions.uegsDirectLightingEnabled != null
+      ) {
+        guiOptions.uegsDirectLightingEnabled = Boolean(
+          partialOptions.directLightingEnabled ??
+            partialOptions.uegsDirectLightingEnabled,
+        );
+      }
+      if (
+        partialOptions.skyLightingEnabled != null ||
+        partialOptions.uegsSkyLightingEnabled != null
+      ) {
+        guiOptions.uegsSkyLightingEnabled = Boolean(
+          partialOptions.skyLightingEnabled ??
+            partialOptions.uegsSkyLightingEnabled,
+        );
+      }
+      if (
+        partialOptions.ambientOcclusionEnabled != null ||
+        partialOptions.uegsAmbientOcclusionEnabled != null
+      ) {
+        guiOptions.uegsAmbientOcclusionEnabled = Boolean(
+          partialOptions.ambientOcclusionEnabled ??
+            partialOptions.uegsAmbientOcclusionEnabled,
+        );
+      }
+      if (
+        partialOptions.bakedShadowEnabled != null ||
+        partialOptions.uegsBakedShadowEnabled != null
+      ) {
+        guiOptions.uegsBakedShadowEnabled = Boolean(
+          partialOptions.bakedShadowEnabled ??
+            partialOptions.uegsBakedShadowEnabled,
+        );
+      }
+      applyUegsDebugOptionsToAllMeshes();
+      return getEditorRuntimeState().debugState;
+    }
+
+    function getEditorCameraPose() {
+      return {
+        position: camera.position.toArray(),
+        quaternion: camera.quaternion.toArray(),
+        fov: camera.fov,
+      };
+    }
+
+    function setEditorCameraPose(pose = {}) {
+      if (Array.isArray(pose.position) && pose.position.length >= 3) {
+        camera.position.set(pose.position[0], pose.position[1], pose.position[2]);
+      }
+      if (Array.isArray(pose.quaternion) && pose.quaternion.length >= 4) {
+        camera.quaternion.set(
+          pose.quaternion[0],
+          pose.quaternion[1],
+          pose.quaternion[2],
+          pose.quaternion[3],
+        ).normalize();
+      }
+      if (Number.isFinite(pose.fov)) {
+        camera.fov = pose.fov;
+      }
+      const bounds = hasLoadedBounds ? getLoadedSplatBounds() : null;
+      if (!applyBoundsClipPlanes(bounds)) {
+        camera.updateProjectionMatrix();
+      }
+      orbitControls.update();
+      renderCurrentFrame();
+      return getEditorCameraPose();
     }
 
     secondGui.add(guiOptions, "resetOnLoad").name("Reset on load");
@@ -845,18 +1137,13 @@
     cameraFolder.add(guiOptions, "autoRotate").name("Auto rotate")
       .listen()
       .onChange((value) => {
-        if (value) {
-          refreshLoadedBoundsCameraRig();
-        }
+        setAutoRotateEnabled(value);
       });
     cameraFolder.add(guiOptions, "orbit").name("Orbit controls")
       .listen()
       .onChange((value) => {
-        orbitControls.enabled = value;
-        canvas.focus();
-        rotX.enable(!value);
-        rotY.enable(!value);
-        rotZ.enable(!value);
+        guiOptions.orbit = Boolean(value);
+        applyCameraControlMode();
       });
       // .setValue(false);
     cameraFolder.add(guiOptions, "reversePointerDir").name("Reverse ptr direction")
@@ -1185,8 +1472,16 @@
         minAlpha: spark.minAlpha ?? null,
         premultipliedAlpha: spark.premultipliedAlpha ?? null,
       },
+      uegsMeshes: frame.children
+        .filter((child) => child instanceof SplatMesh)
+        .map((child) => inspectUegsRuntimeTelemetry(child)),
       debugState: {
         normalColor: normalColor.value,
+        uegsDebugViewMode: guiOptions.uegsDebugViewMode,
+        uegsDirectLightingEnabled: guiOptions.uegsDirectLightingEnabled,
+        uegsSkyLightingEnabled: guiOptions.uegsSkyLightingEnabled,
+        uegsAmbientOcclusionEnabled: guiOptions.uegsAmbientOcclusionEnabled,
+        uegsBakedShadowEnabled: guiOptions.uegsBakedShadowEnabled,
       },
     });
 
@@ -1200,13 +1495,7 @@
       camera,
       loadFiles: (files) => loadFiles(files),
       fitLoadedBounds: () => placeStaticCamera(),
-      setAutoRotate: (value) => {
-        guiOptions.autoRotate = Boolean(value);
-        if (guiOptions.autoRotate) {
-          refreshLoadedBoundsCameraRig();
-        }
-        return guiOptions.autoRotate;
-      },
+      setAutoRotate: (value) => setAutoRotateEnabled(value),
       getViewRig: () => ({
         hasLoadedBounds,
         center: loadedBoundsCenter.toArray(),
@@ -1225,6 +1514,13 @@
       captureCanvasDigest,
       getRuntimeState: getEditorRuntimeState,
       applyPresentationProfile,
+      getCameraPose: getEditorCameraPose,
+      setCameraPose: (pose) => setEditorCameraPose(pose),
+      setUegsDebugOptions: (options) => setUegsDebugOptions(options),
+      applyUegsDebugOptions: () => {
+        applyUegsDebugOptionsToAllMeshes();
+        return getEditorRuntimeState().debugState;
+      },
       getMeshes: () =>
         frame.children.filter((child) => child instanceof SplatMesh),
     };
@@ -1263,6 +1559,47 @@
       updateFrameSplats();
       applyRendererPresentation();
     });
+    const uegsDebugFolder = debugFolder.addFolder("UEGS bundle debug");
+    if (initialUegsDebugUi) {
+      uegsDebugFolder.open();
+    } else {
+      uegsDebugFolder.close();
+    }
+    uegsDebugFolder
+      .add(guiOptions, "uegsDebugViewMode", UEGS_DEBUG_VIEW_OPTIONS)
+      .name("View")
+      .listen()
+      .onChange(() => {
+        applyUegsDebugOptionsToAllMeshes();
+      });
+    uegsDebugFolder
+      .add(guiOptions, "uegsDirectLightingEnabled")
+      .name("Direct lighting")
+      .listen()
+      .onChange(() => {
+        applyUegsDebugOptionsToAllMeshes();
+      });
+    uegsDebugFolder
+      .add(guiOptions, "uegsSkyLightingEnabled")
+      .name("Sky lighting")
+      .listen()
+      .onChange(() => {
+        applyUegsDebugOptionsToAllMeshes();
+      });
+    uegsDebugFolder
+      .add(guiOptions, "uegsAmbientOcclusionEnabled")
+      .name("Ambient occlusion")
+      .listen()
+      .onChange(() => {
+        applyUegsDebugOptionsToAllMeshes();
+      });
+    uegsDebugFolder
+      .add(guiOptions, "uegsBakedShadowEnabled")
+      .name("Baked shadow")
+      .listen()
+      .onChange(() => {
+        applyUegsDebugOptionsToAllMeshes();
+      });
     const presentationFolder = gui.addFolder("Presentation").close();
     presentationFolder
       .add(guiOptions, "presentationProfile", {
@@ -1562,21 +1899,14 @@
     let lastTime = null;
 
     renderer.setAnimationLoop(function animate(time) {
+      const deltaTime = lastTime === null ? 0 : Math.max((time - lastTime) * 0.001, 0);
       lastTime = time;
       stats.begin();
 
-      if (guiOptions.autoRotate && hasLoadedBounds) {
-        const t = time * 0.00035;
-        camera.position.set(
-          loadedBoundsCenter.x + Math.cos(t) * loadedBoundsRadius,
-          loadedBoundsCenter.y + loadedBoundsHeight,
-          loadedBoundsCenter.z + Math.sin(t) * loadedBoundsRadius,
-        );
-        camera.lookAt(loadedBoundsCenter);
-      } else if (guiOptions.orbit) {
+      controls.fpsMovement.update(deltaTime, camera);
+      controls.pointerControls.update(deltaTime, camera);
+      if (guiOptions.orbit || guiOptions.autoRotate) {
         orbitControls.update();
-      } else {
-        controls.update(camera);
       }
 
       renderCurrentFrame();

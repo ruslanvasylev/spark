@@ -31,6 +31,8 @@
     "format": "biome format .",
     "format:fix": "biome format . --fix",
     "inspect:uegs": "node --no-warnings --loader ts-node/esm scripts/inspect-uegs-bundle.ts",
+    "promote:uegs-viewers": "node --no-warnings --loader ts-node/esm scripts/promote-uegs-helmet-viewers.ts",
+    "verify:uegs-viewers": "node scripts/verify-uegs-helmet-viewers.mjs",
     "lint": "biome check .",
     "lint:fix": "biome check . --fix",
     "lint:summary": "biome check --reporter=summary",
