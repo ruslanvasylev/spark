@@ -32,6 +32,8 @@ function buildPayloadFixture(
     normal?: readonly [number, number, number];
     rotation?: readonly [number, number, number, number];
     logScale?: readonly [number, number, number];
+    colorSemantic?: UegsPayloadColorSemantic;
+    appearanceEncoding?: UegsPayloadAppearanceEncoding;
   },
 ) {
   const recordBytes = version === 6 ? 172 : 168;
@@ -72,16 +74,18 @@ function buildPayloadFixture(
   offset += 4;
   view.setUint32(offset, 0, true);
   offset += 4;
+  const colorSemantic =
+    overrides?.colorSemantic ?? UegsPayloadColorSemantic.SurfaceBaseColorLinear;
+  const appearanceEncoding =
+    overrides?.appearanceEncoding ??
+    (version === 6
+      ? UegsPayloadAppearanceEncoding.ExplorableSceneRelightBakedShadows
+      : UegsPayloadAppearanceEncoding.ExplorableSceneRelight);
   view.setUint8(offset, UegsPayloadMaterialTruthSource.HeuristicBindings);
   offset += 1;
-  view.setUint8(offset, UegsPayloadColorSemantic.SurfaceBaseColorLinear);
+  view.setUint8(offset, colorSemantic);
   offset += 1;
-  view.setUint8(
-    offset,
-    version === 6
-      ? UegsPayloadAppearanceEncoding.ExplorableSceneRelightBakedShadows
-      : UegsPayloadAppearanceEncoding.ExplorableSceneRelight,
-  );
+  view.setUint8(offset, appearanceEncoding);
   offset += 1;
   view.setUint8(offset, 0);
   offset += 1;
@@ -252,6 +256,44 @@ function buildBundleFixture(version: 5 | 6) {
   };
 }
 
+function buildBakedFinalBundleFixture() {
+  return {
+    manifest: parseUegsManifest(
+      JSON.stringify({
+        tool: "UEGS",
+        status: "gaussian_payload_export",
+        settings: {
+          export_format: "Spz",
+          export_appearance_mode: "baked",
+          preview_appearance_mode: "match_export",
+        },
+        payload_contract: {
+          color_semantic: "baked_scene_appearance_linear",
+          appearance_encoding: "conservative_first_order_sh",
+          appearance_intent: "baked_capture_parity_sh_residual",
+          capture_backed_baked_final: true,
+        },
+        gaussian_payload_sidecar: {
+          path: "uegs_gaussians_payload.bin",
+          schema: "uegs_gaussian_payload_v6",
+          preserves_normals: true,
+          preserves_baked_shadow: true,
+          gaussian_count: 1,
+        },
+      }),
+    ),
+    payload: parseUegsGaussianPayload(
+      buildPayloadFixture(6, {
+        colorSemantic: UegsPayloadColorSemantic.BakedSceneAppearanceLinear,
+        appearanceEncoding:
+          UegsPayloadAppearanceEncoding.ConservativeFirstOrderSh,
+      }),
+    ),
+    sceneLighting: buildSceneLightingFixture(false),
+    debugCapture: undefined,
+  };
+}
+
 function buildSpzExactGeometryFixture(
   scale: readonly [number, number, number] = [9, 8, 7],
   quaternion: readonly [number, number, number, number] = [0.5, 0.5, 0.5, 0.5],
@@ -416,7 +458,7 @@ assert.strictEqual(
 assert.strictEqual(bakedPreviewContract?.sortRadial, false);
 assert.strictEqual(bakedPreviewContract?.sort32, true);
 assert.strictEqual(bakedPreviewContract?.stochastic, false);
-assert.strictEqual(bakedPreviewContract?.opaqueShellCoverage, true);
+assert.strictEqual(bakedPreviewContract?.opaqueShellCoverage, false);
 assert.strictEqual(bakedPreviewContract?.preBlurAmount, 0);
 assert.strictEqual(bakedPreviewContract?.blurAmount, 0);
 
@@ -607,7 +649,7 @@ assert.deepStrictEqual(bakedRuntime.recommendedViewContract, {
 assert.deepStrictEqual(bakedRuntime.recommendedRenderContract, {
   enable2DGS: false,
   useUegsProjectedEllipse: false,
-  opaqueShellCoverage: true,
+  opaqueShellCoverage: false,
   maxPixelRadius: 512,
   flattenMinAxisTo2D: false,
   clampMinimumShellScale: true,
@@ -617,7 +659,7 @@ assert.deepStrictEqual(bakedRuntime.recommendedRenderContract, {
   usePayloadOpacity: true,
   useSerializedBaseColorForBaseView: false,
   reason:
-    "UEGS explorable scene-parity bundles render most faithfully in Spark by keeping the payload's exact 3D ellipsoid geometry for coverage while preserving the exported shading normal as-is. Suppress splats whose exported surface normal faces away from the view so rear-layer baked-shadow values do not leak through the front surface, and keep the exported shading normal without reorienting it toward the derived shell frame.",
+    "UEGS explorable scene-parity bundles should preserve the exported 3D ellipsoid splats and continuous Gaussian falloff while keeping the payload geometry and shading normals intact. Suppress backfacing leakage with opacity weighting instead of turning the surface into opaque shell disks.",
 });
 assert.strictEqual(bakedMesh.updateVersionCalls, 0);
 
@@ -661,7 +703,7 @@ assert.deepStrictEqual(getUegsSparkViewContract(relightSplatMesh), {
 assert.deepStrictEqual(getUegsSparkRenderContract(relightSplatMesh), {
   enable2DGS: false,
   useUegsProjectedEllipse: false,
-  opaqueShellCoverage: true,
+  opaqueShellCoverage: false,
   maxPixelRadius: 512,
   flattenMinAxisTo2D: false,
   clampMinimumShellScale: true,
@@ -671,7 +713,42 @@ assert.deepStrictEqual(getUegsSparkRenderContract(relightSplatMesh), {
   usePayloadOpacity: true,
   useSerializedBaseColorForBaseView: false,
   reason:
-    "UEGS explorable scene-parity bundles render most faithfully in Spark by keeping the payload's exact 3D ellipsoid geometry for coverage while preserving the exported shading normal as-is. Suppress splats whose exported surface normal faces away from the view so rear-layer baked-shadow values do not leak through the front surface, and keep the exported shading normal without reorienting it toward the derived shell frame.",
+    "UEGS explorable scene-parity bundles should preserve the exported 3D ellipsoid splats and continuous Gaussian falloff while keeping the payload geometry and shading normals intact. Suppress backfacing leakage with opacity weighting instead of turning the surface into opaque shell disks.",
+});
+
+const bakedFinalBundle = buildBakedFinalBundleFixture();
+const bakedFinalMesh = buildFakeMesh(bakedFinalBundle);
+const bakedFinalSplatMesh = asSplatMesh(bakedFinalMesh);
+assert.strictEqual(configureUegsBundleForMesh(bakedFinalSplatMesh), true);
+const bakedFinalRuntime = inspectUegsRuntimeTelemetry(bakedFinalSplatMesh);
+assert.strictEqual(bakedFinalRuntime.autoConfigured, true);
+assert.strictEqual(bakedFinalRuntime.modifierConfigured, true);
+assert.strictEqual(bakedFinalRuntime.exactGeometryAvailable, true);
+assert.strictEqual(bakedFinalRuntime.exactGeometrySource, "hybrid");
+assert.strictEqual(bakedFinalRuntime.maxSh, 1);
+assert.deepStrictEqual(bakedFinalRuntime.recommendedViewContract, {
+  sortRadial: false,
+  sort32: true,
+  stochastic: false,
+  sort360: false,
+  depthBias: 0,
+  reason:
+    "UEGS baked final bundles should use the same stable non-radial depth ordering as the canonical UEGS preview so Spark accumulates the exported Gaussian surface coherently instead of reverting to generic stochastic shell noise.",
+});
+assert.deepStrictEqual(bakedFinalRuntime.recommendedRenderContract, {
+  enable2DGS: false,
+  useUegsProjectedEllipse: false,
+  opaqueShellCoverage: false,
+  maxPixelRadius: 512,
+  flattenMinAxisTo2D: false,
+  clampMinimumShellScale: true,
+  cullBackfacingShellSplats: false,
+  orientNormalsToShellHemisphere: false,
+  flipNormalsToView: false,
+  usePayloadOpacity: true,
+  useSerializedBaseColorForBaseView: false,
+  reason:
+    "UEGS baked final bundles should preserve the exported exact ellipsoid splats and continuous Gaussian falloff while keeping the serialized baked scene appearance as the final view color. Do not collapse the final surface into opaque shell disks.",
 });
 
 const shellNormal = new THREE.Vector3(0, 0, 1);
@@ -709,12 +786,36 @@ try {
         JSON.stringify({
           tool: "UEGS",
           status: "gaussian_payload_export",
-          settings: { export_format: "Spz" },
+          settings: {
+            export_format: "Spz",
+            export_appearance_mode: "baked",
+            preview_appearance_mode: "match_export",
+          },
           payload_contract: {
+            color_semantic: "baked_scene_appearance_linear",
             appearance_encoding: "conservative_first_order_sh",
+            appearance_intent: "baked_capture_parity_sh_residual",
+            capture_backed_baked_final: true,
+          },
+          gaussian_payload_sidecar: {
+            path: "uegs_gaussians_payload.bin",
+            schema: "uegs_gaussian_payload_v6",
           },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url === "http://localhost/exports/uegs_gaussians_payload.bin") {
+      return new Response(
+        buildPayloadFixture(6, {
+          colorSemantic: UegsPayloadColorSemantic.BakedSceneAppearanceLinear,
+          appearanceEncoding:
+            UegsPayloadAppearanceEncoding.ConservativeFirstOrderSh,
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/octet-stream" },
+        },
       );
     }
     return new Response("missing", { status: 404 });
@@ -723,9 +824,18 @@ try {
   const loadedBakedManifestBundle = await loadOptionalUegsBundleFromUrl(
     "/exports/uegs_gaussians.spz",
   );
-  assert.strictEqual(loadedBakedManifestBundle, undefined);
+  assert.ok(loadedBakedManifestBundle);
+  assert.strictEqual(
+    loadedBakedManifestBundle?.payload.header.appearanceEncoding,
+    UegsPayloadAppearanceEncoding.ConservativeFirstOrderSh,
+  );
+  assert.strictEqual(
+    loadedBakedManifestBundle?.payload.header.colorSemantic,
+    UegsPayloadColorSemantic.BakedSceneAppearanceLinear,
+  );
   assert.deepStrictEqual(fetchedBakedManifestUrls, [
     "http://localhost/exports/uegs_manifest.json",
+    "http://localhost/exports/uegs_gaussians_payload.bin",
   ]);
 } finally {
   globalThis.fetch = originalFetchForBakedManifest;
