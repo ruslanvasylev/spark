@@ -280,6 +280,11 @@ function buildBakedFinalBundleFixture() {
           preserves_baked_shadow: true,
           gaussian_count: 1,
         },
+        scene_lighting_contract: {
+          path: "uegs_scene_lighting.json",
+          contract: "uegs_explorable_scene_lighting_v1",
+          baked_geometry_shadow_transfer_exported: true,
+        },
       }),
     ),
     payload: parseUegsGaussianPayload(
@@ -289,7 +294,7 @@ function buildBakedFinalBundleFixture() {
           UegsPayloadAppearanceEncoding.ConservativeFirstOrderSh,
       }),
     ),
-    sceneLighting: buildSceneLightingFixture(false),
+    sceneLighting: buildSceneLightingFixture(true),
     debugCapture: undefined,
   };
 }
@@ -720,12 +725,14 @@ const bakedFinalBundle = buildBakedFinalBundleFixture();
 const bakedFinalMesh = buildFakeMesh(bakedFinalBundle);
 const bakedFinalSplatMesh = asSplatMesh(bakedFinalMesh);
 assert.strictEqual(configureUegsBundleForMesh(bakedFinalSplatMesh), true);
-const bakedFinalRuntime = inspectUegsRuntimeTelemetry(bakedFinalSplatMesh);
+let bakedFinalRuntime = inspectUegsRuntimeTelemetry(bakedFinalSplatMesh);
 assert.strictEqual(bakedFinalRuntime.autoConfigured, true);
 assert.strictEqual(bakedFinalRuntime.modifierConfigured, true);
 assert.strictEqual(bakedFinalRuntime.exactGeometryAvailable, true);
 assert.strictEqual(bakedFinalRuntime.exactGeometrySource, "hybrid");
 assert.strictEqual(bakedFinalRuntime.maxSh, 1);
+assert.strictEqual(bakedFinalRuntime.bakedShadowTransferAvailable, true);
+assert.strictEqual(bakedFinalRuntime.runtimeUniforms.bakedShadowEnabled, true);
 assert.deepStrictEqual(bakedFinalRuntime.recommendedViewContract, {
   sortRadial: false,
   sort32: true,
@@ -750,6 +757,9 @@ assert.deepStrictEqual(bakedFinalRuntime.recommendedRenderContract, {
   reason:
     "UEGS baked final bundles should preserve the exported exact ellipsoid splats and continuous Gaussian falloff while keeping the serialized baked scene appearance as the final view color. Do not collapse the final surface into opaque shell disks.",
 });
+assert.strictEqual(setUegsBakedShadowEnabled(bakedFinalSplatMesh, false), true);
+bakedFinalRuntime = inspectUegsRuntimeTelemetry(bakedFinalSplatMesh);
+assert.strictEqual(bakedFinalRuntime.runtimeUniforms.bakedShadowEnabled, false);
 
 const shellNormal = new THREE.Vector3(0, 0, 1);
 const alignedOutward = alignUegsNormalToShellHemisphere(

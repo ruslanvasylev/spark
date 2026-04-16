@@ -1809,14 +1809,21 @@ export function applyUegsSparkViewContract(
   return contract;
 }
 
+function bundlePreservesBakedShadow(bundle: UegsBundle | undefined): boolean {
+  return Boolean(bundle?.manifest.gaussian_payload_sidecar?.preserves_baked_shadow);
+}
+
 function bundleExportsBakedShadowTransfer(
   bundle: UegsBundle | undefined,
 ): boolean {
-  return Boolean(
-    bundle &&
-      bundle.payload.header.appearanceEncoding ===
-        UegsPayloadAppearanceEncoding.ExplorableSceneRelightBakedShadows &&
-      bundle.sceneLighting.bakedGeometryShadowTransferExported,
+  if (!bundle?.sceneLighting.bakedGeometryShadowTransferExported) {
+    return false;
+  }
+
+  return (
+    bundle.payload.header.appearanceEncoding ===
+      UegsPayloadAppearanceEncoding.ExplorableSceneRelightBakedShadows ||
+    (isCaptureBackedBakedFinalBundle(bundle) && bundlePreservesBakedShadow(bundle))
   );
 }
 

@@ -8289,10 +8289,15 @@ function applyUegsSparkViewContract(viewpoint, source) {
   viewpoint.depthBias = contract.depthBias;
   return contract;
 }
+function bundlePreservesBakedShadow(bundle) {
+  var _a2;
+  return Boolean((_a2 = bundle == null ? void 0 : bundle.manifest.gaussian_payload_sidecar) == null ? void 0 : _a2.preserves_baked_shadow);
+}
 function bundleExportsBakedShadowTransfer(bundle) {
-  return Boolean(
-    bundle && bundle.payload.header.appearanceEncoding === 4 && bundle.sceneLighting.bakedGeometryShadowTransferExported
-  );
+  if (!(bundle == null ? void 0 : bundle.sceneLighting.bakedGeometryShadowTransferExported)) {
+    return false;
+  }
+  return bundle.payload.header.appearanceEncoding === 4 || isCaptureBackedBakedFinalBundle(bundle) && bundlePreservesBakedShadow(bundle);
 }
 function resolveUegsRenderContract(bundle, extra) {
   const base = getUegsSparkRenderContract(bundle);
