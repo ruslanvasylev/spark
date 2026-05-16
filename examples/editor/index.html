@@ -735,6 +735,9 @@
     // Apply camera parameters from URL
     guiOptions.resetPose();
     applyCameraFromQuery();
+    const initialExplicitCameraPose = explicitCameraRequested
+      ? getEditorCameraPose()
+      : null;
 
     const cameraFolder = gui.addFolder("Camera");
     const cameraPose = cameraFolder.addFolder("Camera Pose");
@@ -861,7 +864,7 @@
       const firstUrl = splatFiles.find((file) => typeof file === "string") ?? null;
       const manifestOverrideUrl = urlParams.get("manifest");
       const comparisonManifest =
-        !explicitCameraRequested && typeof firstUrl === "string"
+        typeof firstUrl === "string"
           ? await loadUegsManifestForSpzUrl(firstUrl, manifestOverrideUrl)
           : null;
       const comparisonViewpoint =
@@ -991,11 +994,20 @@
             getLoadedSplatBounds(),
           ),
         );
-      } else {
+      } else if (!explicitCameraRequested) {
         placeStaticCamera();
+      } else {
+        const bounds = refreshLoadedBoundsCameraRig();
+        if (!applyBoundsClipPlanes(bounds)) {
+          camera.updateProjectionMatrix();
+        }
+        orbitControls.update();
       }
 
       applyCameraControlMode({ focusCanvas: false });
+      if (initialExplicitCameraPose) {
+        setEditorCameraPose(initialExplicitCameraPose);
+      }
 
       // Restore focus to canvas for keyboard controls
       canvas.focus();
