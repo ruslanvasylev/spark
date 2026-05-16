@@ -69,15 +69,41 @@ const tallSideBySideFit = fitReferenceViewportIntoContainers(
   ],
 );
 assert.ok(tallSideBySideFit != null);
-assert.ok(Math.abs(tallSideBySideFit.width - 1279) < 1e-9);
-assert.ok(Math.abs(tallSideBySideFit.height - (1279 * 425) / 1014) < 1e-9);
+assert.ok(Math.abs(tallSideBySideFit.width - 1014) < 1e-9);
+assert.ok(Math.abs(tallSideBySideFit.height - 425) < 1e-9);
+assert.ok(Math.abs(tallSideBySideFit.scale - 1) < 1e-12);
 assert.ok(Math.abs(tallSideBySideFit.aspect - 1014 / 425) < 1e-12);
 assert.ok(tallSideBySideFit.height < 1265);
+
+const tallSideBySideUpscaleFit = fitReferenceViewportIntoContainers(
+  referenceViewport,
+  [
+    { width: 1279, height: 1265 },
+    { width: 1280, height: 1265 },
+  ],
+  { allowUpscale: true },
+);
+assert.ok(tallSideBySideUpscaleFit != null);
+assert.ok(Math.abs(tallSideBySideUpscaleFit.width - 1279) < 1e-9);
+assert.ok(
+  Math.abs(tallSideBySideUpscaleFit.height - (1279 * 425) / 1014) < 1e-9,
+);
+assert.ok(Math.abs(tallSideBySideUpscaleFit.aspect - 1014 / 425) < 1e-12);
+assert.ok(tallSideBySideUpscaleFit.height < 1265);
 
 const wideFit = fitReferenceViewportIntoContainers(referenceViewport, [
   { width: 4000, height: 500 },
 ]);
 assert.ok(wideFit != null);
-assert.ok(Math.abs(wideFit.height - 500) < 1e-9);
-assert.ok(Math.abs(wideFit.width - (1014 * 500) / 425) < 1e-9);
+assert.ok(Math.abs(wideFit.width - 1014) < 1e-9);
+assert.ok(Math.abs(wideFit.height - 425) < 1e-9);
+assert.ok(Math.abs(wideFit.scale - 1) < 1e-12);
 assert.ok(wideFit.width < 4000);
+
+const smallFit = fitReferenceViewportIntoContainers(referenceViewport, [
+  { width: 507, height: 300 },
+]);
+assert.ok(smallFit != null);
+assert.ok(Math.abs(smallFit.width - 507) < 1e-9);
+assert.ok(Math.abs(smallFit.height - 212.5) < 1e-9);
+assert.ok(Math.abs(smallFit.scale - 0.5) < 1e-12);

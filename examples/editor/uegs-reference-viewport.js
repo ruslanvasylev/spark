@@ -55,7 +55,11 @@ export function resolveSharedUegsReferenceViewport(viewports) {
   };
 }
 
-export function fitReferenceViewportIntoContainers(viewport, containers) {
+export function fitReferenceViewportIntoContainers(
+  viewport,
+  containers,
+  { allowUpscale = false } = {},
+) {
   if (viewport == null) {
     return null;
   }
@@ -71,7 +75,7 @@ export function fitReferenceViewportIntoContainers(viewport, containers) {
     return null;
   }
 
-  const scale = Math.min(
+  const fitScale = Math.min(
     ...validContainers.map((container) =>
       Math.min(
         container.width / viewport.width,
@@ -79,6 +83,7 @@ export function fitReferenceViewportIntoContainers(viewport, containers) {
       ),
     ),
   );
+  const scale = allowUpscale ? fitScale : Math.min(1, fitScale);
 
   if (!Number.isFinite(scale) || scale <= 0) {
     return null;

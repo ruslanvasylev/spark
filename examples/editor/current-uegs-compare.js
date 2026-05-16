@@ -40,6 +40,7 @@ let syncAnimationFrame = 0;
 let lastSyncedPose = "";
 let referenceViewportLayout = {
   enabled: true,
+  allowUpscale: false,
   viewport: null,
   fit: null,
   mismatch: false,
@@ -110,7 +111,9 @@ function applyReferenceViewportLayout(viewport) {
     width: panel.clientWidth,
     height: panel.clientHeight,
   }));
-  const fit = fitReferenceViewportIntoContainers(viewport, containers);
+  const fit = fitReferenceViewportIntoContainers(viewport, containers, {
+    allowUpscale: referenceViewportLayout.allowUpscale,
+  });
   if (fit == null) {
     for (const frame of [compositeFrame, debugFrame]) {
       frame.style.width = "";
@@ -137,9 +140,13 @@ function applyReferenceViewportLayout(viewport) {
   document.documentElement.dataset.referenceViewportLocked = "1";
 }
 
-async function initializeReferenceViewportLayout(enabled) {
+async function initializeReferenceViewportLayout(
+  enabled,
+  { allowUpscale = false } = {},
+) {
   referenceViewportLayout = {
     enabled,
+    allowUpscale,
     viewport: null,
     fit: null,
     mismatch: false,
@@ -308,12 +315,17 @@ async function initialize() {
     params.get("referenceViewport"),
     true,
   );
+  const referenceViewportAllowUpscale =
+    parseBoolean(params.get("referenceViewportUpscale"), false) ||
+    params.get("referenceViewportScale") === "fit";
   const referenceViewportReady = initializeReferenceViewportLayout(
     referenceViewportEnabled,
+    { allowUpscale: referenceViewportAllowUpscale },
   ).catch((error) => {
     console.warn("Failed to initialize UEGS reference viewport layout", error);
     referenceViewportLayout = {
       enabled: false,
+      allowUpscale: false,
       viewport: null,
       fit: null,
       mismatch: false,
