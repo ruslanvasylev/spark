@@ -141,6 +141,7 @@
     let loadedBoundsRadius = 1;
     let loadedBoundsHeight = 0.5;
     let hasLoadedBounds = false;
+    let preserveCameraPoseOrbitTarget = false;
     let autoRotateRestorePose = null;
     let orbitBeforeAutoRotate = null;
 
@@ -454,9 +455,8 @@
         camera.fov = comparisonViewpoint.verticalFovDegrees;
       }
       const bounds = hasLoadedBounds ? getLoadedSplatBounds() : null;
-      if (hasLoadedBounds) {
-        orbitControls.target.copy(loadedBoundsCenter);
-      }
+      preserveCameraPoseOrbitTarget = true;
+      alignOrbitTargetToCameraDirection(bounds);
       if (!applyBoundsClipPlanes(bounds)) {
         camera.updateProjectionMatrix();
       }
@@ -470,6 +470,8 @@
         quaternionZ: comparisonViewpoint.quaternionZ,
         quaternionW: comparisonViewpoint.quaternionW,
         verticalFovDegrees: comparisonViewpoint.verticalFovDegrees,
+        viewportWidthPx: comparisonViewpoint.viewportWidthPx ?? null,
+        viewportHeightPx: comparisonViewpoint.viewportHeightPx ?? null,
         sparkOpenCv: comparisonViewpoint.sparkOpenCv ?? null,
       };
       return true;
@@ -514,11 +516,35 @@
       return true;
     }
 
-    function refreshLoadedBoundsCameraRig() {
+    function alignOrbitTargetToCameraDirection(bounds) {
+      const forward = camera.getWorldDirection(new THREE.Vector3());
+      if (!Number.isFinite(forward.lengthSq()) || forward.lengthSq() < 1.0e-12) {
+        return;
+      }
+
+      let targetDistance = Math.max(loadedBoundsRadius, orbitControls.minDistance, 0.1);
+      if (bounds && hasLoadedBounds) {
+        const projectedCenterDistance = loadedBoundsCenter
+          .clone()
+          .sub(camera.position)
+          .dot(forward);
+        if (Number.isFinite(projectedCenterDistance) && projectedCenterDistance > 0.1) {
+          targetDistance = Math.max(projectedCenterDistance, orbitControls.minDistance, 0.1);
+        }
+      }
+
+      orbitControls.target
+        .copy(camera.position)
+        .addScaledVector(forward, targetDistance);
+    }
+
+    function refreshLoadedBoundsCameraRig({ preserveOrbitTarget = false } = {}) {
       const bounds = getLoadedSplatBounds();
       if (!bounds || bounds.isEmpty()) {
         hasLoadedBounds = false;
-        orbitControls.target.set(0, 0, 0);
+        if (!preserveOrbitTarget) {
+          orbitControls.target.set(0, 0, 0);
+        }
         orbitControls.minDistance = 0.1;
         orbitControls.maxDistance = 10;
         controls.fpsMovement.moveSpeed = 4;
@@ -530,15 +556,19 @@
       const radius = Math.max(size.length() * 0.45, 1);
       loadedBoundsRadius = Math.max(radius * 1.5, 2);
       loadedBoundsHeight = Math.max(size.y * 0.3, radius * 0.15);
-      orbitControls.target.copy(loadedBoundsCenter);
       orbitControls.minDistance = Math.max(loadedBoundsRadius * 0.2, 0.1);
       orbitControls.maxDistance = Math.max(loadedBoundsRadius * 8, 10);
+      if (!preserveOrbitTarget) {
+        orbitControls.target.copy(loadedBoundsCenter);
+      }
       controls.fpsMovement.moveSpeed = Math.max(loadedBoundsRadius * 0.12, 6);
       return bounds;
     }
 
     function applyCameraControlMode({ focusCanvas = true } = {}) {
-      refreshLoadedBoundsCameraRig();
+      refreshLoadedBoundsCameraRig({
+        preserveOrbitTarget: preserveCameraPoseOrbitTarget,
+      });
       const orbitLikeMode = guiOptions.orbit || guiOptions.autoRotate;
       orbitControls.enabled = orbitLikeMode;
       orbitControls.autoRotate = guiOptions.autoRotate;
@@ -583,6 +613,7 @@
     }
 
     function placeStaticCamera() {
+      preserveCameraPoseOrbitTarget = false;
       currentAppliedComparisonViewpoint = null;
       const bounds = refreshLoadedBoundsCameraRig();
       if (bounds && hasLoadedBounds) {
@@ -1128,6 +1159,8 @@
         camera.fov = pose.fov;
       }
       const bounds = hasLoadedBounds ? getLoadedSplatBounds() : null;
+      preserveCameraPoseOrbitTarget = true;
+      alignOrbitTargetToCameraDirection(bounds);
       if (!applyBoundsClipPlanes(bounds)) {
         camera.updateProjectionMatrix();
       }

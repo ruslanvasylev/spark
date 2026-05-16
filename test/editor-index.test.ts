@@ -59,3 +59,34 @@ test("explicit camera requests survive URL-backed UEGS loads", () => {
     "explicit camera pose must be re-applied after control-mode setup refreshes OrbitControls",
   );
 });
+
+test("manifest camera application preserves exact pose through OrbitControls bookkeeping", () => {
+  const applyManifestCameraBlock = editorIndexHtml.match(
+    /function applyComparisonViewpointToCamera\(comparisonViewpoint\) \{[\s\S]*?return true;\s*\}/,
+  )?.[0];
+
+  assert.ok(
+    applyManifestCameraBlock,
+    "expected applyComparisonViewpointToCamera block in editor index",
+  );
+  assert.match(
+    applyManifestCameraBlock,
+    /preserveCameraPoseOrbitTarget = true;[\s\S]*alignOrbitTargetToCameraDirection\(bounds\);[\s\S]*orbitControls\.update\(\)/,
+    "manifest camera application should align the orbit target along the authored camera ray before OrbitControls updates",
+  );
+  assert.doesNotMatch(
+    applyManifestCameraBlock,
+    /orbitControls\.target\.copy\(loadedBoundsCenter\)/,
+    "manifest camera application must not retarget OrbitControls to scene center because that rewrites the authored quaternion",
+  );
+
+  const controlModeBlock = editorIndexHtml.match(
+    /function applyCameraControlMode\(\{ focusCanvas = true \} = \{\}\) \{[\s\S]*?\n {4}\}/,
+  )?.[0];
+  assert.ok(controlModeBlock, "expected applyCameraControlMode block");
+  assert.match(
+    controlModeBlock,
+    /refreshLoadedBoundsCameraRig\(\{[\s\S]*preserveOrbitTarget: preserveCameraPoseOrbitTarget/,
+    "control-mode refresh should not undo a just-applied manifest or explicit camera pose",
+  );
+});

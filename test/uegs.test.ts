@@ -15,10 +15,12 @@ import {
   getUegsSparkViewContract,
   inspectUegsRuntimeTelemetry,
   loadOptionalUegsBundleFromUrl,
+  parseUegsComparisonViewpoint,
   parseUegsDebugCaptureSidecar,
   parseUegsGaussianPayload,
   parseUegsManifest,
   parseUegsSceneLightingContract,
+  scaleUegsComparisonViewpointToSceneBounds,
   setUegsAmbientOcclusionEnabled,
   setUegsBakedShadowEnabled,
   setUegsDebugViewMode,
@@ -502,6 +504,93 @@ const toneCurvePreviewContract = getUegsEditorPreviewContract(
   toneCurveBakedPreviewManifest,
 );
 assert.strictEqual(toneCurvePreviewContract?.presentationProfile, "ue-truth");
+
+const comparisonViewportManifest = parseUegsManifest(
+  JSON.stringify({
+    tool: "UEGS",
+    status: "gaussian_payload_export",
+    bounds: {
+      origin_x_cm: 0,
+      origin_y_cm: 0,
+      origin_z_cm: 0,
+      extent_x_cm: 100,
+      extent_y_cm: 100,
+      extent_z_cm: 100,
+    },
+    comparison_viewpoint: {
+      source: "fixture_reference_view",
+      position_x_cm: 10,
+      position_y_cm: 20,
+      position_z_cm: 30,
+      quaternion_x: 0,
+      quaternion_y: 0,
+      quaternion_z: 0,
+      quaternion_w: 1,
+      vertical_fov_degrees: 19.7,
+      viewport_width_px: 1014,
+      viewport_height_px: 425,
+      spark_open_cv: false,
+    },
+  }),
+);
+const comparisonViewport = parseUegsComparisonViewpoint(
+  comparisonViewportManifest,
+);
+assert.ok(comparisonViewport);
+assert.strictEqual(comparisonViewport?.viewportWidthPx, 1014);
+assert.strictEqual(comparisonViewport?.viewportHeightPx, 425);
+const legacySceneBounds = new THREE.Box3(
+  new THREE.Vector3(-25, -25, -25),
+  new THREE.Vector3(25, 25, 25),
+);
+const viewportTruthScaled = scaleUegsComparisonViewpointToSceneBounds(
+  comparisonViewport,
+  comparisonViewportManifest,
+  legacySceneBounds,
+);
+assert.deepStrictEqual(
+  viewportTruthScaled,
+  comparisonViewport,
+  "reference-view manifests that record their capture viewport own exact camera pose and must not be rescaled to SPZ center bounds",
+);
+
+const legacyComparisonManifest = parseUegsManifest(
+  JSON.stringify({
+    tool: "UEGS",
+    status: "gaussian_payload_export",
+    bounds: {
+      origin_x_cm: 0,
+      origin_y_cm: 0,
+      origin_z_cm: 0,
+      extent_x_cm: 100,
+      extent_y_cm: 100,
+      extent_z_cm: 100,
+    },
+    comparison_viewpoint: {
+      source: "legacy_reference_view",
+      position_x_cm: 10,
+      position_y_cm: 20,
+      position_z_cm: 30,
+      quaternion_x: 0,
+      quaternion_y: 0,
+      quaternion_z: 0,
+      quaternion_w: 1,
+      vertical_fov_degrees: 45,
+      spark_open_cv: false,
+    },
+  }),
+);
+const legacyComparison = parseUegsComparisonViewpoint(legacyComparisonManifest);
+assert.ok(legacyComparison);
+const legacyScaled = scaleUegsComparisonViewpointToSceneBounds(
+  legacyComparison,
+  legacyComparisonManifest,
+  legacySceneBounds,
+);
+assert.ok(legacyScaled);
+assert.notStrictEqual(legacyScaled?.positionX, legacyComparison?.positionX);
+assert.strictEqual(legacyScaled?.viewportWidthPx, null);
+assert.strictEqual(legacyScaled?.viewportHeightPx, null);
 
 const sceneLighting = parseUegsSceneLightingContract(
   JSON.stringify({

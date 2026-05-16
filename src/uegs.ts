@@ -192,6 +192,8 @@ export type UegsComparisonViewpoint = {
   quaternionZ: number;
   quaternionW: number;
   verticalFovDegrees: number;
+  viewportWidthPx: number | null;
+  viewportHeightPx: number | null;
   sparkOpenCv: boolean | null;
 };
 
@@ -801,6 +803,12 @@ export function parseUegsComparisonViewpoint(
     quaternionZ: quaternion.z,
     quaternionW: quaternion.w,
     verticalFovDegrees: Number(viewpoint.vertical_fov_degrees),
+    viewportWidthPx: Number.isFinite(Number(viewpoint.viewport_width_px))
+      ? Number(viewpoint.viewport_width_px)
+      : null,
+    viewportHeightPx: Number.isFinite(Number(viewpoint.viewport_height_px))
+      ? Number(viewpoint.viewport_height_px)
+      : null,
     sparkOpenCv:
       viewpoint.spark_open_cv == null ? null : Boolean(viewpoint.spark_open_cv),
   };
@@ -815,6 +823,14 @@ export function scaleUegsComparisonViewpointToSceneBounds(
     return null;
   }
   const manifestBounds = manifest?.bounds;
+  const hasExplicitReferenceViewport =
+    comparisonViewpoint.viewportWidthPx != null &&
+    comparisonViewpoint.viewportHeightPx != null &&
+    comparisonViewpoint.viewportWidthPx > 0 &&
+    comparisonViewpoint.viewportHeightPx > 0;
+  if (hasExplicitReferenceViewport) {
+    return comparisonViewpoint;
+  }
   if (!manifestBounds || !sceneBounds || sceneBounds.isEmpty()) {
     return comparisonViewpoint;
   }

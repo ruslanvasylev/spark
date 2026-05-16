@@ -150,6 +150,8 @@ export type UegsComparisonViewpoint = {
     quaternionZ: number;
     quaternionW: number;
     verticalFovDegrees: number;
+    viewportWidthPx: number | null;
+    viewportHeightPx: number | null;
     sparkOpenCv: boolean | null;
 };
 export type UegsDirectionalLight = {
