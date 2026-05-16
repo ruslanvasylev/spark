@@ -26,9 +26,12 @@ Object.defineProperty(window, "viewerFrame", {
 });
 
 async function loadViewerState() {
-  const response = await fetch("/examples/editor/assets/current-uegs-viewers.json", {
-    cache: "no-store",
-  });
+  const response = await fetch(
+    "/examples/editor/assets/current-uegs-viewers.json",
+    {
+      cache: "no-store",
+    },
+  );
   if (!response.ok) {
     throw new Error(
       `Failed to load current-uegs-viewers.json (${response.status})`,
@@ -61,7 +64,7 @@ function buildEditorUrl(state) {
   setDefault("bg", "000000");
   setDefault("camera", "manifest");
   setDefault("sortRadial", 0);
-  setDefault("opaqueShellCoverage", 1);
+  setDefault("opaqueShellCoverage", 0);
   setDefault("preBlurAmount", 0);
   setDefault("blurAmount", 0);
   setDefault("cb", cacheToken);
