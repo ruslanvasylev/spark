@@ -256,7 +256,16 @@ function buildBundleFixture(version: 5 | 6) {
   };
 }
 
-function buildBakedFinalBundleFixture() {
+function buildBakedFinalBundleFixture(
+  options: {
+    appearanceEncoding?: UegsPayloadAppearanceEncoding;
+    manifestAppearanceEncoding?: string;
+    appearanceIntent?: string;
+  } = {},
+) {
+  const appearanceEncoding =
+    options.appearanceEncoding ??
+    UegsPayloadAppearanceEncoding.ConservativeFirstOrderSh;
   return {
     manifest: parseUegsManifest(
       JSON.stringify({
@@ -269,8 +278,10 @@ function buildBakedFinalBundleFixture() {
         },
         payload_contract: {
           color_semantic: "baked_scene_appearance_linear",
-          appearance_encoding: "conservative_first_order_sh",
-          appearance_intent: "baked_capture_parity_sh_residual",
+          appearance_encoding:
+            options.manifestAppearanceEncoding ?? "conservative_first_order_sh",
+          appearance_intent:
+            options.appearanceIntent ?? "baked_capture_parity_sh_residual",
           capture_backed_baked_final: true,
         },
         gaussian_payload_sidecar: {
@@ -290,8 +301,7 @@ function buildBakedFinalBundleFixture() {
     payload: parseUegsGaussianPayload(
       buildPayloadFixture(6, {
         colorSemantic: UegsPayloadColorSemantic.BakedSceneAppearanceLinear,
-        appearanceEncoding:
-          UegsPayloadAppearanceEncoding.ConservativeFirstOrderSh,
+        appearanceEncoding,
       }),
     ),
     sceneLighting: buildSceneLightingFixture(true),
@@ -466,6 +476,32 @@ assert.strictEqual(bakedPreviewContract?.stochastic, false);
 assert.strictEqual(bakedPreviewContract?.opaqueShellCoverage, false);
 assert.strictEqual(bakedPreviewContract?.preBlurAmount, 0);
 assert.strictEqual(bakedPreviewContract?.blurAmount, 0);
+
+const toneCurveBakedPreviewManifest = parseUegsManifest(
+  JSON.stringify({
+    tool: "UEGS",
+    status: "gaussian_payload_export",
+    settings: {
+      export_format: "Spz",
+      export_appearance_mode: "baked",
+      preview_appearance_mode: "match_export",
+    },
+    payload_contract: {
+      color_semantic: "baked_scene_appearance_linear",
+      appearance_encoding: "direct_color_only",
+      appearance_intent: "baked_capture_parity_direct_color",
+      capture_backed_baked_final: true,
+    },
+    scene_appearance_bake: {
+      scene_color_capture_source: "final_tone_curve_hdr",
+      scene_color_capture_color_space: "linear_final_tone_curve_hdr",
+    },
+  }),
+);
+const toneCurvePreviewContract = getUegsEditorPreviewContract(
+  toneCurveBakedPreviewManifest,
+);
+assert.strictEqual(toneCurvePreviewContract?.presentationProfile, "ue-truth");
 
 const sceneLighting = parseUegsSceneLightingContract(
   JSON.stringify({
@@ -663,6 +699,7 @@ assert.deepStrictEqual(bakedRuntime.recommendedRenderContract, {
   flipNormalsToView: false,
   usePayloadOpacity: true,
   useSerializedBaseColorForBaseView: false,
+  usePayloadBakedSceneColorForFinalView: false,
   reason:
     "UEGS explorable scene-parity bundles should preserve the exported 3D ellipsoid splats and continuous Gaussian falloff while keeping the payload geometry and shading normals intact. Suppress backfacing leakage with opacity weighting instead of turning the surface into opaque shell disks.",
 });
@@ -717,6 +754,7 @@ assert.deepStrictEqual(getUegsSparkRenderContract(relightSplatMesh), {
   flipNormalsToView: false,
   usePayloadOpacity: true,
   useSerializedBaseColorForBaseView: false,
+  usePayloadBakedSceneColorForFinalView: false,
   reason:
     "UEGS explorable scene-parity bundles should preserve the exported 3D ellipsoid splats and continuous Gaussian falloff while keeping the payload geometry and shading normals intact. Suppress backfacing leakage with opacity weighting instead of turning the surface into opaque shell disks.",
 });
@@ -754,12 +792,26 @@ assert.deepStrictEqual(bakedFinalRuntime.recommendedRenderContract, {
   flipNormalsToView: false,
   usePayloadOpacity: true,
   useSerializedBaseColorForBaseView: false,
+  usePayloadBakedSceneColorForFinalView: false,
   reason:
     "UEGS baked final bundles should preserve the exported exact ellipsoid splats and continuous Gaussian falloff while keeping the serialized baked scene appearance as the final view color. Do not collapse the final surface into opaque shell disks.",
 });
 assert.strictEqual(setUegsBakedShadowEnabled(bakedFinalSplatMesh, false), true);
 bakedFinalRuntime = inspectUegsRuntimeTelemetry(bakedFinalSplatMesh);
 assert.strictEqual(bakedFinalRuntime.runtimeUniforms.bakedShadowEnabled, false);
+
+const directColorBakedFinalBundle = buildBakedFinalBundleFixture({
+  appearanceEncoding: UegsPayloadAppearanceEncoding.DirectColorOnly,
+  manifestAppearanceEncoding: "direct_color_only",
+  appearanceIntent: "baked_capture_parity_direct_color",
+});
+const directColorBakedFinalContract = getUegsSparkRenderContract(
+  asUegsBundle(directColorBakedFinalBundle),
+);
+assert.strictEqual(
+  directColorBakedFinalContract?.usePayloadBakedSceneColorForFinalView,
+  true,
+);
 
 const shellNormal = new THREE.Vector3(0, 0, 1);
 const alignedOutward = alignUegsNormalToShellHemisphere(

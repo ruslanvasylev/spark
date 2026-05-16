@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { verifyUegsViewerPairArtifacts } from "./lib/verify-uegs-helmet-viewers.mjs";
 
 function parseArgs(argv) {
   const options = {
@@ -69,42 +70,70 @@ async function verifyFileExists(filePath) {
 }
 
 async function verifyRole(baseUrl, role, preset) {
-  const manifest = await fetchJson(`${new URL(preset.files.manifest, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`);
-  const spzHead = await fetchHead(`${new URL(preset.files.spz, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`);
-  const payloadHead = await fetchHead(`${new URL(preset.files.payload, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`);
+  const manifest = await fetchJson(
+    `${new URL(preset.files.manifest, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`,
+  );
+  const spzHead = await fetchHead(
+    `${new URL(preset.files.spz, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`,
+  );
+  const payloadHead = await fetchHead(
+    `${new URL(preset.files.payload, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`,
+  );
 
   assert(spzHead.ok, `${role}: SPZ fetch failed (${spzHead.status})`);
-  assert(payloadHead.ok, `${role}: payload fetch failed (${payloadHead.status})`);
+  assert(
+    payloadHead.ok,
+    `${role}: payload fetch failed (${payloadHead.status})`,
+  );
   assert(
     manifest.gaussian_seed_artifact?.gaussian_count === preset.gaussianCount,
     `${role}: manifest gaussian count drifted`,
   );
   assert(
-    Boolean(manifest.gaussian_payload_sidecar) === Boolean(preset.payloadSidecarPresent),
+    Boolean(manifest.gaussian_payload_sidecar) ===
+      Boolean(preset.payloadSidecarPresent),
     `${role}: payload sidecar presence drifted`,
   );
   assert(
-    Boolean(manifest.scene_lighting_contract) === Boolean(preset.sceneLightingPresent),
+    Boolean(manifest.scene_lighting_contract) ===
+      Boolean(preset.sceneLightingPresent),
     `${role}: scene lighting presence drifted`,
   );
   assert(
-    Boolean(manifest.gaussian_debug_capture_sidecar) === Boolean(preset.debugCapturePresent),
+    Boolean(manifest.gaussian_debug_capture_sidecar) ===
+      Boolean(preset.debugCapturePresent),
     `${role}: debug capture presence drifted`,
   );
 
   if (role === "debug") {
-    const lightingHead = await fetchHead(`${new URL(preset.files.sceneLighting, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`);
-    const debugHead = await fetchHead(`${new URL(preset.files.debugCapture, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`);
-    assert(lightingHead.ok, `${role}: scene lighting fetch failed (${lightingHead.status})`);
-    assert(debugHead.ok, `${role}: debug capture fetch failed (${debugHead.status})`);
+    const lightingHead = await fetchHead(
+      `${new URL(preset.files.sceneLighting, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`,
+    );
+    const debugHead = await fetchHead(
+      `${new URL(preset.files.debugCapture, baseUrl).toString()}?cb=${encodeURIComponent(preset.cacheToken)}`,
+    );
+    assert(
+      lightingHead.ok,
+      `${role}: scene lighting fetch failed (${lightingHead.status})`,
+    );
+    assert(
+      debugHead.ok,
+      `${role}: debug capture fetch failed (${debugHead.status})`,
+    );
   }
 
   await verifyFileExists(path.join(preset.currentDir, "uegs_gaussians.spz"));
   await verifyFileExists(path.join(preset.currentDir, "uegs_manifest.json"));
-  await verifyFileExists(path.join(preset.currentDir, "uegs_gaussians_payload.bin"));
+  await verifyFileExists(
+    path.join(preset.currentDir, "uegs_gaussians_payload.bin"),
+  );
   if (role === "debug") {
-    await verifyFileExists(path.join(preset.currentDir, "uegs_scene_lighting.json"));
-    await verifyFileExists(path.join(preset.currentDir, "uegs_captured_debug_passes.bin"));
+    await verifyFileExists(
+      path.join(preset.currentDir, "uegs_scene_lighting.json"),
+    );
+    await verifyFileExists(
+      path.join(preset.currentDir, "uegs_captured_debug_passes.bin"),
+    );
   }
 
   return {
@@ -128,8 +157,16 @@ async function main() {
   const compositePageState = await verifyViewerPage(compositePage);
   const debugPageState = await verifyViewerPage(debugPage);
   const comparePageState = await verifyViewerPage(comparePage);
-  const composite = await verifyRole(options.baseUrl, "composite", state.composite);
+  const composite = await verifyRole(
+    options.baseUrl,
+    "composite",
+    state.composite,
+  );
   const debug = await verifyRole(options.baseUrl, "debug", state.debug);
+  const artifactPair = await verifyUegsViewerPairArtifacts({
+    compositeDir: state.composite.currentDir,
+    debugDir: state.debug.currentDir,
+  });
 
   console.log(
     JSON.stringify(
@@ -143,8 +180,8 @@ async function main() {
         comparePageState,
         composite,
         debug,
-        note:
-          "This verifier freezes viewer-state, alias, and manifest/file drift. Runtime bundle attachment should still be checked with the canonical 4180 viewer or capture harness when doing render debugging.",
+        artifactPair,
+        note: "This verifier freezes viewer-state, alias, and manifest/file drift. Runtime bundle attachment should still be checked with the canonical 4180 viewer or capture harness when doing render debugging.",
       },
       null,
       2,

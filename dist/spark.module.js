@@ -7433,6 +7433,7 @@ function parseUegsManifest(json) {
   return root;
 }
 function getUegsEditorPreviewContract(manifest) {
+  var _a2;
   const payloadContract = manifest == null ? void 0 : manifest.payload_contract;
   const settings = manifest == null ? void 0 : manifest.settings;
   const exportAppearanceMode = typeof (settings == null ? void 0 : settings.export_appearance_mode) === "string" ? settings.export_appearance_mode.toLowerCase() : "";
@@ -7443,8 +7444,10 @@ function getUegsEditorPreviewContract(manifest) {
   if (!isFinalGeneratedPreview) {
     return void 0;
   }
+  const sceneColorCaptureSource = typeof ((_a2 = manifest == null ? void 0 : manifest.scene_appearance_bake) == null ? void 0 : _a2.scene_color_capture_source) === "string" ? manifest.scene_appearance_bake.scene_color_capture_source.toLowerCase() : "";
+  const isAlreadyToneCurvedSceneColor = sceneColorCaptureSource === "final_tone_curve_hdr";
   return {
-    presentationProfile: "ue-presentation",
+    presentationProfile: isAlreadyToneCurvedSceneColor ? "ue-truth" : "ue-presentation",
     presentationExposure: 1,
     sortRadial: false,
     sort32: true,
@@ -7452,7 +7455,7 @@ function getUegsEditorPreviewContract(manifest) {
     opaqueShellCoverage: false,
     preBlurAmount: 0,
     blurAmount: 0,
-    reason: "UEGS baked preview manifests that declare preview_appearance_mode=match_export and baked_scene_appearance_linear should open in Spark Editor as the final exported splat surface rather than collapsing the result into an opaque shell preview path."
+    reason: isAlreadyToneCurvedSceneColor ? "UEGS tone-curve-backed baked preview manifests already carry UE's final display curve in the exported scene color, so Spark Editor should present them as linear truth without applying a second ACES tone map." : "UEGS baked preview manifests that declare preview_appearance_mode=match_export and baked_scene_appearance_linear should open in Spark Editor as the final exported splat surface rather than collapsing the result into an opaque shell preview path."
   };
 }
 function parseUegsComparisonViewpoint(manifest) {
@@ -8175,6 +8178,12 @@ function isCaptureBackedBakedFinalBundle(bundle) {
     bundle && bundle.payload.header.colorSemantic === 3 && isCaptureBackedBakedFinalManifest(bundle.manifest)
   );
 }
+function shouldUsePayloadBakedSceneColorForFinalView(bundle) {
+  return Boolean(
+    bundle && isCaptureBackedBakedFinalBundle(bundle) && bundle.payload.header.appearanceEncoding === 2
+    /* DirectColorOnly */
+  );
+}
 function bundleUsesOpaqueSurfaceShell(bundle) {
   if (!bundle) {
     return false;
@@ -8225,6 +8234,7 @@ function getUegsSparkRenderContract(source) {
   if (!bundleUsesOpaqueSurfaceShell(bundle)) {
     return void 0;
   }
+  const usePayloadBakedSceneColorForFinalView = shouldUsePayloadBakedSceneColorForFinalView(bundle);
   const contract = isCaptureBackedBakedFinalBundle(bundle) ? {
     enable2DGS: false,
     useUegsProjectedEllipse: false,
@@ -8237,7 +8247,8 @@ function getUegsSparkRenderContract(source) {
     flipNormalsToView: false,
     usePayloadOpacity: true,
     useSerializedBaseColorForBaseView: false,
-    reason: "UEGS baked final bundles should preserve the exported exact ellipsoid splats and continuous Gaussian falloff while keeping the serialized baked scene appearance as the final view color. Do not collapse the final surface into opaque shell disks."
+    usePayloadBakedSceneColorForFinalView,
+    reason: usePayloadBakedSceneColorForFinalView ? "UEGS direct-color baked final bundles should preserve the exported exact ellipsoid splats and sample final color from the unquantized payload scene color instead of the SPZ-quantized serialized color. Do not collapse the final surface into opaque shell disks." : "UEGS baked final bundles should preserve the exported exact ellipsoid splats and continuous Gaussian falloff while keeping the serialized baked scene appearance as the final view color. Do not collapse the final surface into opaque shell disks."
   } : {
     enable2DGS: false,
     useUegsProjectedEllipse: false,
@@ -8250,6 +8261,7 @@ function getUegsSparkRenderContract(source) {
     flipNormalsToView: false,
     usePayloadOpacity: true,
     useSerializedBaseColorForBaseView: false,
+    usePayloadBakedSceneColorForFinalView: false,
     reason: "UEGS explorable scene-parity bundles should preserve the exported 3D ellipsoid splats and continuous Gaussian falloff while keeping the payload geometry and shading normals intact. Suppress backfacing leakage with opacity weighting instead of turning the surface into opaque shell disks."
   };
   const override = (_a2 = resolveUegsExtra(source)) == null ? void 0 : _a2.uegsRenderContractOverride;
@@ -8272,7 +8284,9 @@ function applyUegsSparkViewContract(viewpoint, source) {
 }
 function bundlePreservesBakedShadow(bundle) {
   var _a2;
-  return Boolean((_a2 = bundle == null ? void 0 : bundle.manifest.gaussian_payload_sidecar) == null ? void 0 : _a2.preserves_baked_shadow);
+  return Boolean(
+    (_a2 = bundle == null ? void 0 : bundle.manifest.gaussian_payload_sidecar) == null ? void 0 : _a2.preserves_baked_shadow
+  );
 }
 function bundleExportsBakedShadowTransfer(bundle) {
   if (!(bundle == null ? void 0 : bundle.sceneLighting.bakedGeometryShadowTransferExported)) {
@@ -8603,7 +8617,7 @@ function ensureUegsGpuResources(packedSplats) {
   });
   const bakedShadowEnabled = new DynoBool({
     key: "uegsBakedShadowEnabled",
-    value: bundle.payload.header.appearanceEncoding === 4 && bundle.sceneLighting.bakedGeometryShadowTransferExported
+    value: bundleExportsBakedShadowTransfer(bundle)
   });
   const directLightingEnabled = new DynoBool({
     key: "uegsDirectLightingEnabled",
@@ -8779,6 +8793,7 @@ function makeUegsModifier(mesh) {
   const flipNormalsToView = (renderContract == null ? void 0 : renderContract.flipNormalsToView) ?? true;
   const usePayloadOpacity = (renderContract == null ? void 0 : renderContract.usePayloadOpacity) ?? true;
   const useSerializedBaseColorForBaseView = (renderContract == null ? void 0 : renderContract.useSerializedBaseColorForBaseView) ?? false;
+  const usePayloadBakedSceneColorForFinalView = (renderContract == null ? void 0 : renderContract.usePayloadBakedSceneColorForFinalView) ?? false;
   const useSerializedSceneAppearanceForFinalView = bundle.payload.header.colorSemantic === 3;
   return dynoBlock({ gsplat: Gsplat }, { gsplat: Gsplat }, ({ gsplat }) => {
     if (!gsplat) {
@@ -9020,7 +9035,7 @@ function makeUegsModifier(mesh) {
                 ? uegsDirectContributionShadowed
                 : uegsDirectContribution;
             }
-            vec3 uegsFinalRgb = ${useSerializedSceneAppearanceForFinalView ? "uegsSerializedBaseColor" : "uegsEmissiveAmbientOcclusion.rgb + uegsAmbient + uegsDirectLighting"};
+            vec3 uegsFinalRgb = ${useSerializedSceneAppearanceForFinalView ? usePayloadBakedSceneColorForFinalView ? "uegsBaseMetallic.rgb" : "uegsSerializedBaseColor" : "uegsEmissiveAmbientOcclusion.rgb + uegsAmbient + uegsDirectLighting"};
             vec3 uegsDebugRgb = uegsFinalRgb;
             float uegsDebugOpacity = uegsOpacity;
             switch (${inputs.debugViewMode}) {

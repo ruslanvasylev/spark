@@ -90,6 +90,10 @@ export type UegsManifest = {
         export_appearance_mode?: string;
         preview_appearance_mode?: string;
     };
+    scene_appearance_bake?: {
+        scene_color_capture_source?: string;
+        scene_color_capture_color_space?: string;
+    };
     scene_lighting_contract?: {
         path?: string;
         contract?: string;
@@ -317,10 +321,11 @@ export type UegsSparkRenderContract = {
     flipNormalsToView: boolean;
     usePayloadOpacity: boolean;
     useSerializedBaseColorForBaseView: boolean;
+    usePayloadBakedSceneColorForFinalView: boolean;
     reason: string;
 };
 export type UegsEditorPreviewContract = {
-    presentationProfile: "ue-presentation";
+    presentationProfile: "ue-presentation" | "ue-truth";
     presentationExposure: number;
     sortRadial: boolean;
     sort32: boolean;
