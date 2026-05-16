@@ -25,6 +25,7 @@
     "build:wasm": "node rust/build_wasm.js",
     "build:watch": "onchange 'src/**/*.{ts,glsl}' -- npm run build:dev",
     "capture:uegs": "node scripts/capture-uegs-inspector.mjs",
+    "compare:uegs-foreground": "node scripts/compare-uegs-foreground-parity.mjs",
     "clean": "rm -rf dist/ && rm -rf node_modules/ && rm -rf rust/target/ && rm -rf rust/spark-internal-rs/pkg/ && npm run assets:clean",
     "dev": "npm run build:dev && (vite --host & npm run build:watch)",
     "docs": "node scripts/clean-site-files.js && node scripts/copy-site-files.js && mkdocs serve",
